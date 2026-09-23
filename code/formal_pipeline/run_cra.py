@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""CRA route: partial FLUX RF inversion followed by whole-image attack.
-
-The local ``flux_attack.py`` supplies the FLUX Kontext VAE, rectified-flow Euler inversion, classifier velocity
-update, LoRA loading, decoding, metrics, and output logic.  The only algorithmic
-change is to keep the low-noise suffix of the full sigma grid, so inversion
-stops at an intermediate sigma and forward attack traverses only that suffix.
-
-No subject mask is accepted in this route.
-"""
+"""Run CRA with partial FLUX inversion and global classifier guidance."""
 
 from __future__ import annotations
 
@@ -19,7 +11,7 @@ from types import ModuleType
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_BASE = SCRIPT_DIR / "flux_attack.py"
+DEFAULT_BASE = SCRIPT_DIR / "cra_flux_attack.py"
 
 
 def parse_wrapper_args() -> tuple[argparse.Namespace, list[str]]:

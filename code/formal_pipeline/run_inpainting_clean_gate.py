@@ -14,9 +14,9 @@ from PIL import Image, ImageFilter, ImageStat
 
 HERE = Path(__file__).resolve().parent
 PYTHON = Path(os.environ.get("FLUX_PYTHON", sys.executable))
-TEACHER = HERE / "flux_kontext_inpaint_attack.py"
+JIA = HERE / "jia_inpainting_attack.py"
 QWEN = HERE / "qwen_composite_gate.py"
-EVALUATE = HERE / "evaluate_imagenet.py"
+EVALUATE = HERE / "evaluate_whitebox_resnet50.py"
 MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
 SAM_PYTHON = Path(os.environ.get("SAM_PYTHON", sys.executable))
 SAM_SCRIPT = HERE / "sam3_single.py"
@@ -69,9 +69,9 @@ def main() -> None:
     output_dir = args.output_dir.resolve()
     manifest_path = run_root / "manifest.json"
     manifest = load(manifest_path)
-    anchor = str(manifest["gate_target_label"])
-    anchor_class = int(manifest["gate_target_class"])
-    phrase = str(manifest.get("effective_visible_anchor") or anchor)
+    carrier = str(manifest["gate_target_label"])
+    carrier_class = int(manifest["gate_target_class"])
+    phrase = str(manifest.get("effective_visible_carrier") or carrier)
     current_prompt = prompt_for(phrase)
     base_seed = int(manifest["seed"])
     attempts_root = output_dir / "clean_gate_attempts"
@@ -79,10 +79,10 @@ def main() -> None:
     max_attempts = min(max(args.max_attempts, 1), 4)
     best: dict | None = None
     for attempt in range(1, max_attempts + 1):
-        seed = base_seed if attempt == 1 else base_seed + attempt * 1009 + anchor_class
+        seed = base_seed if attempt == 1 else base_seed + attempt * 1009 + carrier_class
         attempt_dir = attempts_root / f"attempt_{attempt}"
         run([
-            str(PYTHON), str(TEACHER), "--image", manifest["copied_source"],
+            str(PYTHON), str(JIA), "--image", manifest["copied_source"],
             "--mask", str(run_root / "assets" / "background_mask.png"),
             "--inpaint-prompt", current_prompt, "--flux-steps", "50",
             "--seed", str(seed), "--output-dir", str(attempt_dir),
@@ -111,14 +111,14 @@ def main() -> None:
         background_only = attempt_dir / "background_only.png"
         make_background_only(image, subject_mask, background_only)
         manifest = load(manifest_path)
-        manifest["teacher_prompt"] = current_prompt
+        manifest["jia_prompt"] = current_prompt
         save(manifest_path, manifest)
         suffix = f"{args.route}_clean"
         if attempt <= 2:
             run([
                 str(PYTHON), str(QWEN), "--model", str(MODEL), "--attempt", str(attempt),
                 "--classifier-failed-advisor", "--inpainting-result",
-                "--image-path", str(image), "--prompt-key", "teacher_prompt",
+                "--image-path", str(image), "--prompt-key", "jia_prompt",
                 "--classifier-image-path", str(background_only),
                 "--record-suffix", suffix, "--run-roots", str(run_root),
             ])
@@ -128,7 +128,7 @@ def main() -> None:
             record_path = attempt_dir / "classifier_only.json"
             run([
                 str(PYTHON), str(EVALUATE), "--image", str(background_only),
-                "--target-class", str(anchor_class), "--output", str(record_path),
+                "--target-class", str(carrier_class), "--output", str(record_path),
             ])
             evidence = load(record_path)
             rank_only = int(evidence.get("target_rank", 1001))
@@ -155,7 +155,7 @@ def main() -> None:
             shutil.copy2(image, output_dir / "clean.png")
             approval = {
                 "pass": True, "route": args.route, "attempt": attempt,
-                "anchor": anchor, "anchor_class": anchor_class,
+                "carrier": carrier, "carrier_class": carrier_class,
                 "target_rank": rank, "prompt": current_prompt, "seed": seed,
                 "classifier_image": str(background_only),
                 "sam3_subject_mask": str(subject_mask),
@@ -165,7 +165,7 @@ def main() -> None:
                 "record": str(record_path),
             }
             save(output_dir / "clean_gate.json", approval)
-            print(f"INPAINTING CLEAN GATE PASS | route={args.route} target={anchor} rank={rank}", flush=True)
+            print(f"INPAINTING CLEAN GATE PASS | route={args.route} target={carrier} rank={rank}", flush=True)
             return
         # Qwen may revise the target phrase once only. All three subsequent
         # trials vary the seed under this single approved rewrite.
@@ -181,7 +181,7 @@ def main() -> None:
     approval = {
         "pass": True, "forced_fallback": True, "route": args.route,
         "attempt": best["attempt"], "attempts_exhausted": max_attempts,
-        "anchor": anchor, "anchor_class": anchor_class,
+        "carrier": carrier, "carrier_class": carrier_class,
         "target_rank": best["rank"], "prompt": best["prompt"], "seed": best["seed"],
         "classifier_image": str(best["background_only"]),
         "sam3_subject_mask": str(best["subject_mask"]),
@@ -193,7 +193,7 @@ def main() -> None:
     save(output_dir / "clean_gate.json", approval)
     print(
         f"INPAINTING CLEAN GATE FORCED CONTINUE | route={args.route} "
-        f"target={anchor} best_rank={best['rank']} after={max_attempts}", flush=True,
+        f"target={carrier} best_rank={best['rank']} after={max_attempts}", flush=True,
     )
 
 

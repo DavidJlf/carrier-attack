@@ -6,7 +6,7 @@ Code for the anonymous ICLR submission. The pipeline reproduces a white-box, sub
 
 - `data/dreambooth_references/`: reference images for 20 DreamBooth subjects (106 images total).
 - `code/lora/`: FLUX LoRA training and subject-sample generation.
-- `code/formal_pipeline/flux_auomation.py`: carrier construction, CRA/JIA/CIRA, Grad-CAM and contact-image generation.
+- `code/formal_pipeline/flux_automation.py`: carrier construction, CRA/JIA/CIRA, Grad-CAM and contact-image generation. `carrier_catalog.py` selects a non-target carrier by target class when `VISIBLE_CARRIER=auto`.
 - `scripts/`: shell entry points for the workflow.
 
 ## Environment
@@ -23,4 +23,4 @@ Copy `configs/subject.env.example` to `configs/subject.env` and fill in the mode
 
 `bash scripts/run_all.sh configs/subject.env` chains these stages. It stops after generating candidates until a valid `SOURCE_IMAGE` is selected; image selection is intentionally a manual quality-control step. For a subsequent attack-only run, use step 3 directly rather than retraining the LoRA.
 
-The main script runs the white-box methods. For optional transfer evaluation, invoke `code/formal_pipeline/flux_auomation.py` with `--evaluate-transfer`.
+The main script runs the white-box methods. For optional transfer evaluation, invoke `code/formal_pipeline/flux_automation.py` with `--evaluate-transfer`.

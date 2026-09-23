@@ -1,54 +1,5 @@
 #!/usr/bin/env python3
-"""Flux Kontext inpainting with adversarial (classifier-guided) noise injection.
-
-This combines the two existing scripts:
-
-  * flux_kontext_inpaint_step_by_step.py -- the explicit, pipeline-free
-    denoising loop for FluxKontextInpaintPipeline (resolution snapping, T5/CLIP
-    encoding, flow-match schedule, 2x2 latent packing, per-step mask blending).
-  * sdxl_attack.py -- the "semantics-aware adversarial noise" of Section 4 of
-    NotesonAttackGradient.pdf, where the victim classifier's gradient evaluated
-    on the predicted clean sample x_hat_{0|t} is folded back into the model's
-    per-step prediction.
-
-Adapting Eq. (5) to Flux
-------------------------
-SDXL/DDIM is an epsilon-prediction model, so the notes write
-
-    eps_tilde(x_t) = eps_theta(x_t) + c * sqrt(1 - alpha_bar_t) * grad_xt f(x_hat_{0|t}, y_tar)
-    x_hat_{0|t}    = (x_t - sqrt(1 - alpha_bar_t) * eps_theta) / sqrt(alpha_bar_t)
-
-Flux is a rectified-flow / flow-matching model: the transformer predicts a
-velocity v_theta ~= noise - x_0 on the path x_t = (1 - sigma_t) * x_0 + sigma_t * noise.
-The Tweedie/clean-sample estimate is therefore simply
-
-    x_hat_{0|t} = x_t - sigma_t * v_theta(x_t)                                  (3')
-
-and the reparameterized prediction handed to the scheduler becomes
-
-    v_tilde(x_t) = v_theta(x_t) + c * w(sigma_t) * grad_xt f(x_hat_{0|t}, y_tar) (5')
-
-with w(sigma_t) selectable via --attack-weight (constant / sigma_t, mirroring
-the sqrt(1 - alpha_bar_t) weighting of the DDIM formulation).
-
-Because Flux latents are 2x2-packed into tokens, the gradient is taken w.r.t.
-the packed latents, which is the exact same tensor the scheduler steps -- the
-packing is a pure reshape/permute, so this is equivalent to differentiating in
-the unpacked latent space.
-
-The inpaint mask is reused for the attack: by default the adversarial term is
-restricted to the regenerated (white) region, since the per-step blend
-overwrites everything outside the mask with the re-noised original latents
-anyway.
-
-Example
--------
-    python flux_kontext_inpaint_attack.py \
-        --image outputs/sam3_inpaint/base.png \
-        --mask outputs/sam3_flux_inpaint/inpaint_mask.png \
-        --inpaint-prompt "a dog and a fox in the background" \
-        --target-class 340 --attack-scale 1000 --no-cpu-offload
-"""
+"""FLUX inpainting and classifier-guided attack used by JIA and CIRA preparation."""
 
 from __future__ import annotations
 
@@ -66,8 +17,6 @@ from tqdm.auto import tqdm
 
 DEFAULT_FLUX = "black-forest-labs/FLUX.1-Kontext-dev"
 
-# Kontext is trained on these resolutions; the pipeline snaps the input image
-# to the closest aspect ratio in this list.
 PREFERRED_KONTEXT_RESOLUTIONS = [
     (672, 1568),
     (688, 1504),
@@ -93,7 +42,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    # --- inpainting (same knobs as flux_kontext_inpaint_step_by_step.py) ---
     parser.add_argument(
         "--image",
         default="outputs/sam3_inpaint/base.png",
@@ -127,32 +75,23 @@ def parse_args() -> argparse.Namespace:
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    # --- attack (mirrors sdxl_attack.py) ---
     parser.add_argument(
         "--target-class",
         type=int,
         default=None,
-        help=(
-            "ImageNet class index y_tar. When set, the classifier gradient on "
-            "pred_x0 is injected into the velocity prediction (Eq. 5'). Omit "
-            "to run plain step-by-step inpainting."
-        ),
+        help="ImageNet target class; omit for clean inpainting.",
     )
     parser.add_argument(
         "--attack-scale",
         type=float,
         default=1.0,
-        help="Coefficient c scaling the classifier-induced term in Eq. (5').",
+        help="Classifier guidance scale.",
     )
     parser.add_argument(
         "--attack-weight",
         choices=("constant", "sigma"),
         default="constant",
-        help=(
-            "w(sigma_t) in Eq. (5'). 'constant' uses c alone (as sdxl_attack.py "
-            "does in practice); 'sigma' additionally scales by sigma_t, the "
-            "flow-matching analogue of sqrt(1 - alpha_bar_t)."
-        ),
+        help="Constant or noise-level-weighted classifier guidance.",
     )
     parser.add_argument(
         "--attack-grad-norm",
@@ -201,7 +140,6 @@ def parse_args() -> argparse.Namespace:
         help="Also run the identical schedule with the attack disabled.",
     )
 
-    # --- victim classifier reporting ---
     parser.add_argument(
         "--victim-topk",
         type=int,
@@ -237,24 +175,15 @@ def load_flux_pipeline(args: argparse.Namespace) -> FluxKontextInpaintPipeline:
         args.flux_model, torch_dtype=flux_dtype
     )
     if args.device.startswith("cuda") and not args.no_cpu_offload:
-        # The accelerate hooks fire on the modules themselves (AutoencoderKL's
-        # encode/decode carry @apply_forward_hook), so the explicit loop below
-        # works with offload just like the pipeline does. The attack's backward
-        # pass happens immediately after the VAE forward, before any other
-        # component runs, so the VAE weights are still resident on the GPU.
         pipe.enable_model_cpu_offload()
     else:
         pipe.to(args.device)
 
-    # Only latent gradients are ever needed, never weight gradients.
     for module in (pipe.transformer, pipe.vae, pipe.text_encoder, pipe.text_encoder_2):
         module.requires_grad_(False)
     return pipe
 
 
-# ---------------------------------------------------------------------------
-# Helpers replicated from FluxKontextInpaintPipeline (diffusers 0.39.0)
-# ---------------------------------------------------------------------------
 
 
 def calculate_shift(
@@ -341,9 +270,6 @@ def encode_prompt(
     return prompt_embeds, pooled_prompt_embeds, text_ids
 
 
-# ---------------------------------------------------------------------------
-# Victim classifier (identical treatment to sdxl_attack.py)
-# ---------------------------------------------------------------------------
 
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -366,7 +292,6 @@ def victim_logits_from_tensor(
     normalization) using differentiable ops so gradients propagate to ``image``.
     """
     image = image.to(dtype=torch.float32)
-    # Important: the attack is not working if we set antialias=False
     image = F.interpolate(
         image, size=(224, 224), mode="bilinear", align_corners=False, antialias=True
     )
@@ -443,9 +368,6 @@ def make_image_grid(
     return grid
 
 
-# ---------------------------------------------------------------------------
-# Adversarial noise for the flow-matching (Flux) parameterization
-# ---------------------------------------------------------------------------
 
 
 def decode_packed_latents(
@@ -480,33 +402,18 @@ def adversarial_velocity(
     grad_norm: str,
     mask: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Fold the classifier gradient on pred_x0 into the velocity prediction.
-
-    Flow-matching form of Eq. (5) (see the module docstring):
-
-        x_hat_{0|t} = x_t - sigma_t * v_theta(x_t)
-        v_tilde     = v_theta + c * w(sigma_t) * grad_xt f(x_hat_{0|t}, y_tar)
-
-    Returns the reparameterized velocity, the decoded pred_x0 image (detached,
-    reused for the per-step report so it is not decoded twice) and the victim
-    logits for that image.
-    """
+    """Return classifier-guided velocity, decoded image and classifier logits."""
     velocity_pred = velocity_pred.detach()
     with torch.enable_grad():
         xt = latents.detach().requires_grad_(True)
-        # pred_x0 / x_hat_{0|t}: the Tweedie estimate of the clean latents.
         pred_x0 = xt - sigma * velocity_pred
         image = decode_packed_latents(pipe, pred_x0, height, width)
         logits = victim_logits_from_tensor(image, victim)
         target = torch.tensor([target_class], device=logits.device)
-        # f(x_hat_{0|t}, y_tar): targeted cross-entropy. Descending it along the
-        # fused trajectory drives the sample toward the target class.
         loss = F.cross_entropy(logits, target)
         grad_xt = torch.autograd.grad(loss, xt)[0]
 
     if not torch.isfinite(grad_xt).all() or grad_xt.abs().max() == 0:
-        # Usually a sign that the decode graph was severed (e.g. reentrant VAE
-        # gradient checkpointing) or that bf16 underflowed the gradient.
         print(
             "  warning: classifier gradient is zero/non-finite at this step; "
             "try --no-attack-vae-checkpointing or --attack-grad-norm rms"
@@ -522,15 +429,10 @@ def adversarial_velocity(
     weight = scale * (float(sigma) if weight_mode == "sigma" else 1.0)
     adv_term = weight * grad_xt
     if mask is not None:
-        # Outside the white region the per-step blend restores the original
-        # latents anyway, so perturbing there only wastes signal.
         adv_term = adv_term * mask
     return velocity_pred + adv_term, image.detach(), logits.detach()
 
 
-# ---------------------------------------------------------------------------
-# Step-by-step inpainting loop with the attack fused in
-# ---------------------------------------------------------------------------
 
 
 @torch.no_grad()
@@ -549,8 +451,6 @@ def flux_inpaint_attack(
     multiple_of = vae_scale_factor * 2  # packing needs even latent dims
     generator = torch.Generator(device="cpu").manual_seed(args.seed)
 
-    # --- 1. Resolution: cap by max_area, then snap the input image to the ---
-    # --- closest preferred Kontext resolution (its size wins over height/width)
     height, width = args.height, args.width
     aspect_ratio = width / height
     width = round((args.max_area * aspect_ratio) ** 0.5) // multiple_of * multiple_of
@@ -566,18 +466,14 @@ def flux_inpaint_attack(
     resized = pipe.image_processor.resize(image, image_height, image_width)
     width, height = image_width, image_height
 
-    # PIL -> normalized (1, 3, H, W) tensor in [-1, 1]
     image_pt = pipe.image_processor.preprocess(resized, image_height, image_width)
     init_image = image_pt.to(dtype=torch.float32)
 
-    # --- 2. Prompt encoding ---
     prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
         pipe, args.inpaint_prompt, device
     )
     dtype = prompt_embeds.dtype
 
-    # --- 3. Timesteps: flow-match sigmas with resolution-dependent shift, ---
-    # --- then truncate the schedule head according to strength ---
     sigmas = np.linspace(1.0, 1 / args.flux_steps, args.flux_steps)
     image_seq_len = (height // vae_scale_factor // 2) * (width // vae_scale_factor // 2)
     mu = calculate_shift(
@@ -597,11 +493,8 @@ def flux_inpaint_attack(
     if len(timesteps) < 1:
         raise ValueError(f"strength={args.strength} leaves no denoising steps")
     latent_timestep = timesteps[:1]
-    # sigma_t per loop iteration; the scheduler keeps len(timesteps) + 1 sigmas.
     schedule_sigmas = pipe.scheduler.sigmas[t_start * pipe.scheduler.order :]
 
-    # --- 4. Latents: VAE-encode the init image (mode of the latent dist), ---
-    # --- noise it to the first timestep, pack everything into tokens ---
     num_channels_latents = pipe.transformer.config.in_channels // 4  # 16
     latent_height = 2 * (height // (vae_scale_factor * 2))
     latent_width = 2 * (width // (vae_scale_factor * 2))
@@ -614,9 +507,7 @@ def flux_inpaint_attack(
     ) * pipe.vae.config.scaling_factor
 
     shape = (1, num_channels_latents, latent_height, latent_width)
-    # randn on the CPU generator, then moved to device (randn_tensor semantics)
     noise = torch.randn(shape, generator=generator, dtype=dtype, device="cpu").to(device)
-    # sigma(t0) * noise + (1 - sigma(t0)) * image; with strength=1.0 this is pure noise
     latents = pipe.scheduler.scale_noise(image_latents, latent_timestep, noise)
 
     latent_ids = prepare_latent_image_ids(
@@ -634,7 +525,6 @@ def flux_inpaint_attack(
     noise = pack_latents(noise, 1, num_channels_latents, latent_height, latent_width)
     latents = pack_latents(latents, 1, num_channels_latents, latent_height, latent_width)
 
-    # --- 5. Mask at latent resolution, expanded to the packed layout ---
     mask_condition = pipe.mask_processor.preprocess(
         mask_image, height=height, width=width, resize_mode="default", crops_coords=None
     )
@@ -649,7 +539,6 @@ def flux_inpaint_attack(
         latent_width,
     )
 
-    # --- 6. Attack setup ---
     attack_end_step = (
         args.attack_end_step if args.attack_end_step is not None else len(timesteps) - 1
     )
@@ -668,9 +557,7 @@ def flux_inpaint_attack(
             f"region={'whole latent' if args.attack_everywhere else 'mask only'}"
         )
 
-    # --- 7. Denoising loop ---
     if pipe.transformer.config.guidance_embeds:
-        # Kontext-dev is guidance-distilled: the scale is an input embedding
         guidance = torch.full(
             [1], args.flux_guidance, device=device, dtype=torch.float32
         ).expand(latents.shape[0])
@@ -682,7 +569,6 @@ def flux_inpaint_attack(
     labels: list[str] = []
 
     for i, t in enumerate(tqdm(timesteps, desc=f"Flux inpaint [{tag}]")):
-        # target tokens and conditioning image tokens share one sequence
         latent_model_input = torch.cat([latents, image_latents], dim=1)
         timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
@@ -722,7 +608,6 @@ def flux_inpaint_attack(
                 mask=attack_mask,
             )
             if args.step_topk > 0:
-                # Reuse the decode/forward the attack already performed.
                 pred_x0_image = to_pil(decoded)
                 step_predictions = topk_from_logits(logits, weights, args.step_topk)
         elif args.step_topk > 0 or args.pred_x0_grid:
@@ -749,8 +634,6 @@ def flux_inpaint_attack(
 
         latents = pipe.scheduler.step(velocity_pred, t, latents, return_dict=False)[0]
 
-        # keep the unmasked region: re-noise the init latents to the next
-        # timestep and blend them back in (black mask pixels = keep)
         init_latents_proper = image_latents
         if i < len(timesteps) - 1:
             noise_timestep = timesteps[i + 1]
@@ -759,7 +642,6 @@ def flux_inpaint_attack(
             )
         latents = (1 - mask) * init_latents_proper + mask * latents
 
-    # --- 8. Decode ---
     latents = unpack_latents(latents, height, width, vae_scale_factor)
     latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
     image_out = pipe.vae.decode(latents.to(pipe.vae.dtype), return_dict=False)[0]

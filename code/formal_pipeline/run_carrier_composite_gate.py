@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qwen-VL + ImageNet classifier gate for one visible-anchor composite."""
+"""Qwen-VL and ImageNet classifier gate for a carrier composite."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-root", required=True, type=Path)
-    parser.add_argument("--anchor-label", required=True)
-    parser.add_argument("--anchor-class", required=True, type=int)
+    parser.add_argument("--carrier-label", required=True)
+    parser.add_argument("--carrier-class", required=True, type=int)
     parser.add_argument("--max-prompt-rounds", type=int, default=3)
     parser.add_argument("--seeds-per-prompt", type=int, default=3)
     return parser.parse_args()
@@ -45,7 +45,7 @@ def run(command: list[str]) -> None:
 def snapshot_evaluated_candidate(run_root: Path, attempt: int, record: dict) -> Path:
     """Bind the image files that Qwen actually saw to its attempt record."""
     assets = run_root / "assets"
-    snapshot = assets / "anchor_gate_evaluated" / f"attempt_{attempt:03d}"
+    snapshot = assets / "carrier_gate_evaluated" / f"attempt_{attempt:03d}"
     snapshot.mkdir(parents=True, exist_ok=True)
     for name in ("composite.png", "composite_GENERATED.png", "composite_MASK.png"):
         source = assets / name
@@ -119,13 +119,13 @@ def restore_forced_best(run_root: Path, candidates: list[tuple[dict, Path]],
     for key in ("background_prompt", "qwen_target_phrase", "seed"):
         if metadata.get(key) is not None:
             manifest[key] = metadata[key]
-    manifest["anchor_gate_status"] = "forced_best"
-    manifest["anchor_gate_attempt"] = attempt
-    manifest["anchor_gate_selected_snapshot"] = str(snapshot)
+    manifest["carrier_gate_status"] = "forced_best"
+    manifest["carrier_gate_attempt"] = attempt
+    manifest["carrier_gate_selected_snapshot"] = str(snapshot)
     save(manifest_path, manifest)
     evidence = record.get("classifier_evidence", {})
     print(
-        f"ANCHOR GATE FORCED BEST | {label} class={target_class} "
+        f"CARRIER GATE FORCED BEST | {label} class={target_class} "
         f"attempt={attempt} rank={evidence.get('target_rank', 1001)} "
         f"prob={evidence.get('target_probability', 0.0)}",
         flush=True,
@@ -136,7 +136,7 @@ def regenerate(run_root: Path, prompt: str, seed: int, phrase: str, label: str) 
     manifest_path = run_root / "manifest.json"
     manifest = load(manifest_path)
     assets = run_root / "assets"
-    archive = assets / "anchor_gate_attempts" / label
+    archive = assets / "carrier_gate_attempts" / label
     archive.mkdir(parents=True, exist_ok=True)
     for name in ("composite.png", "composite_GENERATED.png", "composite_MASK.png"):
         path = assets / name
@@ -145,7 +145,7 @@ def regenerate(run_root: Path, prompt: str, seed: int, phrase: str, label: str) 
     save(archive / "generation.json", {
         "background_prompt": manifest["background_prompt"],
         "seed": manifest["seed"],
-        "visible_anchor": manifest["visible_anchor"],
+        "visible_carrier": manifest["visible_carrier"],
     })
     run([
         str(PYTHON), str(GENERATOR),
@@ -170,9 +170,9 @@ def main() -> None:
     run_root = args.run_root.expanduser().resolve()
     manifest_path = run_root / "manifest.json"
     manifest = load(manifest_path)
-    manifest["gate_target_label"] = args.anchor_label
-    manifest["gate_target_class"] = args.anchor_class
-    manifest["qwen_requested_target"] = args.anchor_label
+    manifest["gate_target_label"] = args.carrier_label
+    manifest["gate_target_class"] = args.carrier_class
+    manifest["qwen_requested_target"] = args.carrier_label
     save(manifest_path, manifest)
     stale_gate = run_root / "qwen_gate.json"
     if stale_gate.is_file():
@@ -195,26 +195,26 @@ def main() -> None:
             record.update({
                 "pass": True,
                 "combined_gate_pass": True,
-                "gate_target_label": args.anchor_label,
-                "gate_target_class": args.anchor_class,
+                "gate_target_label": args.carrier_label,
+                "gate_target_class": args.carrier_class,
                 "classifier_top10_required": True,
             })
             save(stale_gate, record)
             save(run_root / "classifier_gate_normal.json", {
                 **record["classifier_evidence"], "pass": True,
-                "gate_target_label": args.anchor_label,
+                "gate_target_label": args.carrier_label,
             })
             manifest = load(manifest_path)
-            manifest["anchor_gate_status"] = "passed"
-            manifest["anchor_gate_attempt"] = attempt
+            manifest["carrier_gate_status"] = "passed"
+            manifest["carrier_gate_attempt"] = attempt
             save(manifest_path, manifest)
-            print(f"ANCHOR GATE PASS | {args.anchor_label} class={args.anchor_class} rank={rank}")
+            print(f"CARRIER GATE PASS | {args.carrier_label} class={args.carrier_class} rank={rank}")
             return
 
         manifest = load(manifest_path)
         current = manifest["background_prompt"]
         revised = str(record.get("adjusted_prompt") or current).strip()
-        phrase = str(record.get("adjusted_target_phrase") or manifest.get("qwen_target_phrase") or args.anchor_label).strip()
+        phrase = str(record.get("adjusted_target_phrase") or manifest.get("qwen_target_phrase") or args.carrier_label).strip()
         attempt += 1
         regenerate(run_root, revised, base_seed, phrase, f"prompt_round_{prompt_round}_base_seed")
         for seed_trial in range(1, args.seeds_per_prompt + 1):
@@ -228,29 +228,29 @@ def main() -> None:
             rank = int(record.get("classifier_evidence", {}).get("target_rank", 1001))
             if record.get("pass") is True and rank <= 10:
                 record.update({"pass": True, "combined_gate_pass": True,
-                               "gate_target_label": args.anchor_label,
-                               "gate_target_class": args.anchor_class,
+                               "gate_target_label": args.carrier_label,
+                               "gate_target_class": args.carrier_class,
                                "classifier_top10_required": True})
                 save(stale_gate, record)
                 save(run_root / "classifier_gate_normal.json", {
                     **record["classifier_evidence"], "pass": True,
-                    "gate_target_label": args.anchor_label,
+                    "gate_target_label": args.carrier_label,
                 })
                 manifest = load(manifest_path)
-                manifest["anchor_gate_status"] = "passed"
-                manifest["anchor_gate_attempt"] = attempt
+                manifest["carrier_gate_status"] = "passed"
+                manifest["carrier_gate_attempt"] = attempt
                 save(manifest_path, manifest)
-                print(f"ANCHOR GATE PASS | {args.anchor_label} class={args.anchor_class} rank={rank}")
+                print(f"CARRIER GATE PASS | {args.carrier_label} class={args.carrier_class} rank={rank}")
                 return
-            seed = base_seed + prompt_round * 10000 + seed_trial * 1009 + args.anchor_class
+            seed = base_seed + prompt_round * 10000 + seed_trial * 1009 + args.carrier_class
             manifest = load(manifest_path)
             regenerate(run_root, manifest["background_prompt"], seed,
-                       manifest.get("qwen_target_phrase", args.anchor_label),
+                       manifest.get("qwen_target_phrase", args.carrier_label),
                        f"prompt_round_{prompt_round}_seed_trial_{seed_trial}")
             attempt += 1
     if not evaluated_candidates:
         raise RuntimeError(f"Anchor gate produced no evaluated candidates for {run_root}")
-    restore_forced_best(run_root, evaluated_candidates, args.anchor_label, args.anchor_class)
+    restore_forced_best(run_root, evaluated_candidates, args.carrier_label, args.carrier_class)
 
 
 if __name__ == "__main__":

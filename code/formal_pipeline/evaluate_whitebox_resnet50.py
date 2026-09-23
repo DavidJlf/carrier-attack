@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate one image with the official torchvision ResNet-50 preprocessing."""
+"""Report ResNet-50 target score and rank for one image."""
 
 import argparse
 import json

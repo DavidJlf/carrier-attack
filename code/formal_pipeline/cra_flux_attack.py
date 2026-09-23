@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""FLUX classifier attack with RF inversion and global guidance.
-
-This is a FLUX-native port of the experiment structure in ``sdxl_attack_input.py``.
-It is deliberately independent from the FLUX inpainting attack:
-
-* prompt mode starts from a random FLUX latent;
-* input mode VAE-encodes an existing composite and performs full rectified-flow
-  (Euler/ODE) inversion to obtain a clean pivot trajectory;
-* the denoising velocity is modified by a differentiable ImageNet classifier;
-* the classifier-guided update applies to the whole latent.
-
-FLUX Kontext is guidance-distilled and has no SDXL unconditional CFG branch.
-Consequently, ``--use_null_text`` is accepted as a compatibility switch but maps
-to per-step pivot-velocity correction, which serves the same reconstruction goal
-without pretending to optimize a nonexistent unconditional text embedding.
-"""
+"""FLUX inversion and global classifier-guided attack for CRA and CIRA."""
 
 from __future__ import annotations
 
@@ -359,8 +344,6 @@ def run_forward(
         velocity = model_velocity(
             pipe, latents, context, sigma, embeds, pooled, text_ids, ids, args.guidance_scale
         )
-        # FLUX replacement for null-text reconstruction: correct the model
-        # velocity toward the exact clean pivot transition obtained by inversion.
         if pivots is not None and args.pivot_correction > 0:
             delta = next_sigma - sigma
             pivot_velocity = (pivots[step + 1] - pivots[step]) / delta
@@ -561,8 +544,6 @@ def main() -> None:
         generator = torch.Generator(device="cpu").manual_seed(args.seed)
         shape = (1, (latent_h // 2) * (latent_w // 2), 64)
         initial = torch.randn(shape, generator=generator, dtype=dtype).to(execution_device)
-        # Kontext requires conditioning-image tokens. A zero latent is used only
-        # for direct prompt compatibility; input mode remains the recommended path.
         context = torch.zeros_like(initial)
 
     victim, weights = classifier(execution_device)

@@ -24,7 +24,7 @@ from torchvision.models import ResNet50_Weights
 
 
 HERE = Path(__file__).resolve().parent
-TEACHER_ORIGINAL = HERE / "flux_kontext_inpaint_attack.py"
+JIA_ATTACK = HERE / "jia_inpainting_attack.py"
 INPAINTING_CLEAN_GATE = HERE / "run_inpainting_clean_gate.py"
 DEFAULT_OUTPUT_ROOT = Path("outputs")
 DEFAULT_SAM_PYTHON = Path(os.environ.get("SAM_PYTHON", sys.executable))
@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", required=True, help="Input subject image.")
     parser.add_argument("--target", required=True, help="Exact ImageNet target label.")
     parser.add_argument(
-        "--visible-anchor",
+        "--visible-carrier",
         help=(
             "Optional visible object used in every generation/inversion prompt. "
             "The classifier attack objective remains --target/--target-class."
@@ -99,7 +99,7 @@ def parse_args() -> argparse.Namespace:
         help="Controlled composite-prompt override used only by Qwen retry rounds.",
     )
     parser.add_argument(
-        "--jia-prompt", dest="teacher_prompt",
+        "--jia-prompt", dest="jia_prompt",
         help="Optional clean/JIA/CIRA inpainting-prompt override.",
     )
     parser.add_argument(
@@ -287,8 +287,8 @@ def export_run_contact(
     assets: Path,
     stages: list[dict],
     selected_methods: tuple[str, ...],
-    inpainting_return_preparation_root: Path,
-    teacher_root: Path,
+    cira_preparation_root: Path,
+    jia_root: Path,
     attack_scale: float,
 ) -> Path:
     """Export one run contact with white-box, Grad-CAM, and transfer results."""
@@ -312,14 +312,14 @@ def export_run_contact(
     context_path = None
     context_label = None
     generated = assets / "composite_GENERATED.png"
-    independent_clean = inpainting_return_preparation_root / f"aligned_rms{attack_scale:g}_late35_49" / "clean.png"
-    teacher_clean = teacher_root / f"aligned_rms{attack_scale:g}_late35_49" / "clean.png"
+    independent_clean = cira_preparation_root / f"aligned_rms{attack_scale:g}_late35_49" / "clean.png"
+    jia_clean = jia_root / f"aligned_rms{attack_scale:g}_late35_49" / "clean.png"
     if "cra" in selected_methods and generated.is_file():
         context_path, context_label = generated, "Composite generated background"
     elif "cira" in selected_methods and independent_clean.is_file():
         context_path, context_label = independent_clean, "Independent masked clean inpainting"
-    elif teacher_clean.is_file():
-        context_path, context_label = teacher_clean, "JIA clean baseline"
+    elif jia_clean.is_file():
+        context_path, context_label = jia_clean, "JIA clean baseline"
 
     cells = [(0, 0, source, "Original source", None, None, None)]
     if context_path is not None:
@@ -442,8 +442,8 @@ def export_transfer_contact(
     return output
 
 
-def extract_teacher_step_probabilities(log_path: Path, target_label: str, output: Path) -> None:
-    """Extract the teacher script's printed target probabilities without changing it."""
+def extract_jia_step_probabilities(log_path: Path, target_label: str, output: Path) -> None:
+    """Extract the jia script's printed target probabilities without changing it."""
     if not log_path.is_file():
         return
     pattern = re.compile(
@@ -455,7 +455,7 @@ def extract_teacher_step_probabilities(log_path: Path, target_label: str, output
         if 30 <= step <= 49:
             rows.append(
                 {"step": step, "target_probability": match.group(2),
-                 "source": "teacher_original_top3_log_rounded"}
+                 "source": "jia_original_top3_log_rounded"}
             )
     if rows:
         with output.open("w", newline="", encoding="utf-8") as handle:
@@ -514,18 +514,18 @@ def main() -> None:
     assets = run_root / "assets"
     logs = run_root / "logs"
     # protected_root = run_root / "protected_mask"
-    return_root = run_root / "cra"
-    teacher_root = run_root / "jia"
-    inpainting_return_root = run_root / "cira"
-    inpainting_return_preparation_root = inpainting_return_root / "preparation"
+    cra_root = run_root / "cra"
+    jia_root = run_root / "jia"
+    cira_root = run_root / "cira"
+    cira_preparation_root = cira_root / "preparation"
     # inpainting_protected_root = run_root / "inpainting_protected_mask"
     for directory in (
         assets,
         logs,
-        return_root,
-        teacher_root,
-        inpainting_return_root,
-        inpainting_return_preparation_root,
+        cra_root,
+        jia_root,
+        cira_root,
+        cira_preparation_root,
     ):
         directory.mkdir(parents=True, exist_ok=True)
     source = assets / f"source{image.suffix.lower()}"
@@ -539,29 +539,29 @@ def main() -> None:
             )
         source = matches[0]
 
-    visible_anchor = (args.visible_anchor or target_label).strip()
-    if not visible_anchor:
-        raise ValueError("--visible-anchor cannot be empty")
-    anchor_mode = visible_anchor.lower() != target_label.lower()
+    visible_carrier = (args.visible_carrier or target_label).strip()
+    if not visible_carrier:
+        raise ValueError("--visible-carrier cannot be empty")
+    carrier_mode = visible_carrier.lower() != target_label.lower()
     default_background_prompt = (
-        f"exactly one {visible_anchor} in the distant background, "
-        f"a single {visible_anchor}, slightly blurred by shallow depth of field, "
+        f"exactly one {visible_carrier} in the distant background, "
+        f"a single {visible_carrier}, slightly blurred by shallow depth of field, "
         f"with visible edges, no duplicate animals"
     )
     background_prompt = args.background_prompt or default_background_prompt
-    default_teacher_prompt = (
+    default_jia_prompt = (
         "Edit only the masked background. Preserve the existing foreground "
         "subject unchanged. In the distant background, exactly one "
-        f"{visible_anchor}, slightly blurred by shallow depth of field, with "
+        f"{visible_carrier}, slightly blurred by shallow depth of field, with "
         "visible edges. Do not add or modify any foreground subject."
     )
-    teacher_prompt = args.teacher_prompt or default_teacher_prompt
+    jia_prompt = args.jia_prompt or default_jia_prompt
     # Keep the foreground and background clauses separate.
     default_attack_prompt = (
         f"a realistic photograph with a sharp, in-focus {foreground_prompt} "
         f"in the foreground; in the distant background, exactly one "
-        f"{visible_anchor} is slightly blurred by shallow depth of field, "
-        f"with visible edges, with no other {visible_anchor} and no duplicate animals"
+        f"{visible_carrier} is slightly blurred by shallow depth of field, "
+        f"with visible edges, with no other {visible_carrier} and no duplicate animals"
     )
     attack_prompt = args.attack_prompt or default_attack_prompt
     manifest = {
@@ -574,14 +574,14 @@ def main() -> None:
         "source_classes": args.source_classes,
         "target_class": target_class,
         "target_label": target_label,
-        "visible_anchor": visible_anchor,
-        "anchor_mode": anchor_mode,
+        "visible_carrier": visible_carrier,
+        "carrier_mode": carrier_mode,
         "background_prompt": background_prompt,
         "attack_prompt": attack_prompt,
-        "teacher_prompt": teacher_prompt,
+        "jia_prompt": jia_prompt,
         "prompt_overrides": {
             "background": args.background_prompt is not None,
-            "teacher": args.teacher_prompt is not None,
+            "jia": args.jia_prompt is not None,
             "attack": args.attack_prompt is not None,
         },
         "selected_methods": list(selected_methods),
@@ -592,7 +592,7 @@ def main() -> None:
         "composite_resolution": args.composite_resolution,
         "cra": {"classifier_scale": args.attack_scale, "progress": "50->35->50", "attack_steps": 15},
         "jia": {
-            "script": str(TEACHER_ORIGINAL),
+            "script": str(JIA_ATTACK),
             "classifier_scale": args.attack_scale,
             "gradient_normalization": "rms",
             "attack_weight": "constant",
@@ -602,7 +602,7 @@ def main() -> None:
             "seed": 0,
         },
         "cira": {
-            "input": "independently regenerated from original + background_mask + teacher_prompt",
+            "input": "independently regenerated from original + background_mask + jia_prompt",
             "preparation_output": "cira/preparation/clean.png",
             "classifier_scale": args.attack_scale,
             "progress": "50->35->50",
@@ -638,39 +638,39 @@ def main() -> None:
                 f"Neither Qwen nor classifier Top-10 gate has passed for {run_root}"
             )
         manifest = prepared_manifest
-        visible_anchor = str(manifest.get("visible_anchor", target_label))
-        anchor_mode = bool(manifest.get("anchor_mode", False))
+        visible_carrier = str(manifest.get("visible_carrier", target_label))
+        carrier_mode = bool(manifest.get("carrier_mode", False))
         background_prompt = manifest["background_prompt"]
-        prepared_visible_anchor = str(manifest.get("visible_anchor", target_label))
-        qwen_target_phrase = str(manifest.get("qwen_target_phrase", prepared_visible_anchor))
+        prepared_visible_carrier = str(manifest.get("visible_carrier", target_label))
+        qwen_target_phrase = str(manifest.get("qwen_target_phrase", prepared_visible_carrier))
         # Only the composite-return route follows the Qwen-approved target phrase.
         # JIA and CIRA construction remain independent.
         attack_prompt = re.sub(
-            rf"\b{re.escape(prepared_visible_anchor)}\b",
+            rf"\b{re.escape(prepared_visible_carrier)}\b",
             qwen_target_phrase,
             manifest["attack_prompt"],
             flags=re.IGNORECASE,
         )
         # Inpainting methods use the current background-only prompt and never
         # inherit the composite/Qwen wording from a prepared manifest.
-        teacher_prompt = re.sub(
-            rf"\b{re.escape(prepared_visible_anchor)}\b",
+        jia_prompt = re.sub(
+            rf"\b{re.escape(prepared_visible_carrier)}\b",
             qwen_target_phrase,
-            teacher_prompt,
+            jia_prompt,
             flags=re.IGNORECASE,
         )
-        manifest["teacher_prompt"] = teacher_prompt
-        manifest["effective_visible_anchor"] = qwen_target_phrase
+        manifest["jia_prompt"] = jia_prompt
+        manifest["effective_visible_carrier"] = qwen_target_phrase
         manifest["selected_methods"] = list(selected_methods)
         # Use the exact seed that produced the Qwen-approved composite.
         args.seed = int(manifest["seed"])
         manifest["effective_cra_prompt"] = attack_prompt
-        manifest["teacher_prompt_qwen_adjusted"] = False
+        manifest["jia_prompt_qwen_adjusted"] = False
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     else:
         manifest["phase"] = "prepared" if args.phase == "prepare" else "full"
         manifest["default_background_prompt"] = default_background_prompt
-        manifest["default_teacher_prompt"] = default_teacher_prompt
+        manifest["default_jia_prompt"] = default_jia_prompt
         manifest["default_attack_prompt"] = default_attack_prompt
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -735,11 +735,11 @@ def main() -> None:
 
     if "cra" in selected_methods:
         # Preserve the original composite/Qwen prompt and gate behavior.
-        return_command = [
+        cra_command = [
             str(flux_python), str(HERE / "run_cra.py"),
-            "--base-flux-attack", str(HERE / "flux_attack.py"),
+            "--base-flux-attack", str(HERE / "cra_flux_attack.py"),
             "--full-steps", "50", "--return-to-progress", "35",
-            "--run-name", f"scale{args.attack_scale:g}_late15", "--output-root", str(return_root),
+            "--run-name", f"scale{args.attack_scale:g}_late15", "--output-root", str(cra_root),
             "--input_image", str(composite), "--single_image_attack",
             "--prompt", attack_prompt, "--inversion_prompt", attack_prompt,
             "--target_class", str(target_class), "--target_label", target_label,
@@ -752,78 +752,78 @@ def main() -> None:
             "--seed", str(args.seed), "--local_files_only", "--skip_clean_baseline",
             "--lora_path", str(lora), "--lora_scale", str(args.lora_scale),
         ]
-        return_dir = return_root / f"scale{args.attack_scale:g}_late15"
+        cra_dir = cra_root / f"scale{args.attack_scale:g}_late15"
         code = run_logged(
             "CRA | carrier finite return 50->35->50 with global guidance",
-            return_command, logs / "05_return.log", env, args.dry_run,
+            cra_command, logs / "05_cra.log", env, args.dry_run,
             method_number=method_numbers["cra"], method_total=method_total,
-            method_output=return_dir,
+            method_output=cra_dir,
         )
         gradcam = None
         if code == 0:
             _, gradcam = run_top1_gradcam(
-                flux_python, return_dir, assets / "subject_mask.png",
-                logs / "05b_return_gradcam.log", env, args.dry_run,
+                flux_python, cra_dir, assets / "subject_mask.png",
+                logs / "05b_cra_gradcam.log", env, args.dry_run,
             )
-        stages.append({"method": "cra", "exit_code": code, "output": str(return_dir), "gradcam": gradcam})
+        stages.append({"method": "cra", "exit_code": code, "output": str(cra_dir), "gradcam": gradcam})
 
-    if ({"jia", "cira"} & set(selected_methods)) and not TEACHER_ORIGINAL.is_file():
-        raise FileNotFoundError(f"JIA attack script not found: {TEACHER_ORIGINAL}")
+    if ({"jia", "cira"} & set(selected_methods)) and not JIA_ATTACK.is_file():
+        raise FileNotFoundError(f"JIA attack script not found: {JIA_ATTACK}")
 
     if "jia" in selected_methods:
-        teacher_dir = teacher_root / f"aligned_rms{args.attack_scale:g}_late35_49"
+        jia_dir = jia_root / f"aligned_rms{args.attack_scale:g}_late35_49"
         gate_code = run_logged(
             "JIA CLEAN GATE | generate clean, then classifier/Qwen",
             [str(flux_python), str(INPAINTING_CLEAN_GATE),
-             "--run-root", str(run_root), "--output-dir", str(teacher_dir),
+             "--run-root", str(run_root), "--output-dir", str(jia_dir),
              "--route", "jia"],
-            logs / "06a_teacher_clean_gate.log", env, args.dry_run,
+            logs / "06a_jia_clean_gate.log", env, args.dry_run,
         )
         if gate_code != 0:
             raise RuntimeError(f"JIA clean inpainting gate failed with exit code {gate_code}")
-        teacher_gate = {} if args.dry_run else read_json(teacher_dir / "clean_gate.json")
-        approved_teacher_prompt = str(teacher_gate.get("prompt", teacher_prompt))
-        approved_teacher_seed = int(teacher_gate.get("seed", args.seed))
-        teacher_command = [
-            str(flux_python), str(TEACHER_ORIGINAL),
+        jia_gate = {} if args.dry_run else read_json(jia_dir / "clean_gate.json")
+        approved_jia_prompt = str(jia_gate.get("prompt", jia_prompt))
+        approved_jia_seed = int(jia_gate.get("seed", args.seed))
+        jia_command = [
+            str(flux_python), str(JIA_ATTACK),
             "--image", str(source), "--mask", str(assets / "background_mask.png"),
-            "--inpaint-prompt", approved_teacher_prompt, "--target-class", str(target_class),
+            "--inpaint-prompt", approved_jia_prompt, "--target-class", str(target_class),
             "--attack-scale", str(args.attack_scale), "--attack-grad-norm", "rms", "--attack-weight", "constant",
             "--flux-steps", "50", "--attack-start-step", "35", "--attack-end-step", "49",
-            "--seed", str(approved_teacher_seed), "--output-dir", str(teacher_dir),
+            "--seed", str(approved_jia_seed), "--output-dir", str(jia_dir),
             "--no-cpu-offload", "--attack-everywhere",
         ]
         code = run_logged(
             "JIA | joint inpainting and adversarial optimization",
-            teacher_command, logs / "06_jia.log", env, args.dry_run,
+            jia_command, logs / "06_jia.log", env, args.dry_run,
             method_number=method_numbers["jia"], method_total=method_total,
-            method_output=teacher_dir,
+            method_output=jia_dir,
         )
         if code == 0:
             if not args.dry_run:
-                extract_teacher_step_probabilities(logs / "06_jia.log", target_label, teacher_dir / "attack_steps.csv")
+                extract_jia_step_probabilities(logs / "06_jia.log", target_label, jia_dir / "attack_steps.csv")
             code = run_logged(
                 "JIA matched final evaluation",
-                [str(flux_python), str(HERE / "evaluate_imagenet.py"),
-                 "--image", str(teacher_dir / "attacked.png"), "--target-class", str(target_class),
-                 "--output", str(teacher_dir / "attack_eval.json")],
-                logs / "07_teacher_eval.log", env, args.dry_run,
+                [str(flux_python), str(HERE / "evaluate_whitebox_resnet50.py"),
+                 "--image", str(jia_dir / "attacked.png"), "--target-class", str(target_class),
+                 "--output", str(jia_dir / "attack_eval.json")],
+                logs / "07_jia_eval.log", env, args.dry_run,
             )
         gradcam = None
         if code == 0:
-            _, gradcam = run_top1_gradcam(flux_python, teacher_dir, assets / "subject_mask.png", logs / "07b_teacher_gradcam.log", env, args.dry_run)
-        stages.append({"method": "jia", "exit_code": code, "output": str(teacher_dir), "gradcam": gradcam})
+            _, gradcam = run_top1_gradcam(flux_python, jia_dir, assets / "subject_mask.png", logs / "07b_jia_gradcam.log", env, args.dry_run)
+        stages.append({"method": "jia", "exit_code": code, "output": str(jia_dir), "gradcam": gradcam})
 
     if "cira" in selected_methods:
         # Independently regenerate clean inpainting from the original image,
         # background mask, and inpainting prompt. Never reuse method 2 output.
-        preparation_dir = inpainting_return_preparation_root / f"aligned_rms{args.attack_scale:g}_late35_49"
+        preparation_dir = cira_preparation_root / f"aligned_rms{args.attack_scale:g}_late35_49"
         code = run_logged(
             "CIRA CLEAN GATE | independently generate clean, then classifier/Qwen",
             [str(flux_python), str(INPAINTING_CLEAN_GATE),
              "--run-root", str(run_root), "--output-dir", str(preparation_dir),
              "--route", "cira"],
-            logs / "08_inpainting_return_preparation.log", env, args.dry_run,
+            logs / "08_cira_preparation.log", env, args.dry_run,
         )
         clean_inpainting = preparation_dir / "clean.png"
         if code != 0:
@@ -831,36 +831,36 @@ def main() -> None:
         if not args.dry_run and not clean_inpainting.is_file():
             raise FileNotFoundError(f"Independent clean inpainting was not created: {clean_inpainting}")
         preparation_gate = {} if args.dry_run else read_json(preparation_dir / "clean_gate.json")
-        approved_return_prompt = str(preparation_gate.get("prompt", teacher_prompt))
-        approved_return_seed = int(preparation_gate.get("seed", args.seed))
+        approved_cira_prompt = str(preparation_gate.get("prompt", jia_prompt))
+        approved_cira_seed = int(preparation_gate.get("seed", args.seed))
 
-        inpainting_return_dir = inpainting_return_root / f"scale{args.attack_scale:g}_late15"
-        inpainting_return_command = [
+        cira_dir = cira_root / f"scale{args.attack_scale:g}_late15"
+        cira_command = [
             str(flux_python), str(HERE / "run_cra.py"),
-            "--run-name", f"scale{args.attack_scale:g}_late15", "--output-root", str(inpainting_return_root),
-            "--base-flux-attack", str(HERE / "flux_attack.py"),
+            "--run-name", f"scale{args.attack_scale:g}_late15", "--output-root", str(cira_root),
+            "--base-flux-attack", str(HERE / "cra_flux_attack.py"),
             "--full-steps", "50", "--return-to-progress", "35",
             "--input_image", str(clean_inpainting), "--single_image_attack",
-            "--prompt", approved_return_prompt, "--inversion_prompt", approved_return_prompt,
+            "--prompt", approved_cira_prompt, "--inversion_prompt", approved_cira_prompt,
             "--target_class", str(target_class), "--target_label", target_label,
             "--source_classes", args.source_classes,
             "--guidance_scale", "2.5", "--inversion_guidance_scale", "2.5",
             "--recon_guidance_scale", "1.0", "--pivot_correction", "1.0",
             "--classifier_scale", str(args.attack_scale), "--normalize_grad", "--objective", "ce", "--attack_sign", "1",
             "--height", str(args.attack_resolution), "--width", str(args.attack_resolution),
-            "--seed", str(approved_return_seed), "--local_files_only", "--skip_clean_baseline",
+            "--seed", str(approved_cira_seed), "--local_files_only", "--skip_clean_baseline",
             "--lora_path", str(lora), "--lora_scale", str(args.lora_scale),
         ]
         code = run_logged(
             "CIRA | independent clean inpainting then 15-step global finite return",
-            inpainting_return_command, logs / "09_cira.log", env, args.dry_run,
+            cira_command, logs / "09_cira.log", env, args.dry_run,
             method_number=method_numbers["cira"], method_total=method_total,
-            method_output=inpainting_return_dir,
+            method_output=cira_dir,
         )
         gradcam = None
         if code == 0:
-            _, gradcam = run_top1_gradcam(flux_python, inpainting_return_dir, assets / "subject_mask.png", logs / "09b_inpainting_return_gradcam.log", env, args.dry_run)
-        stages.append({"method": "cira", "exit_code": code, "output": str(inpainting_return_dir), "gradcam": gradcam})
+            _, gradcam = run_top1_gradcam(flux_python, cira_dir, assets / "subject_mask.png", logs / "09b_cira_gradcam.log", env, args.dry_run)
+        stages.append({"method": "cira", "exit_code": code, "output": str(cira_dir), "gradcam": gradcam})
 
     # Optional: evaluate fixed white-box outputs on separate black-box models.
     for stage_index, stage in enumerate(stages, start=1) if args.evaluate_transfer else []:
@@ -900,7 +900,7 @@ def main() -> None:
     if not args.dry_run:
         contact_path = export_run_contact(
             run_root, run_name, source, assets, stages, selected_methods,
-            inpainting_return_preparation_root, teacher_root, args.attack_scale,
+            cira_preparation_root, jia_root, args.attack_scale,
         )
         if args.evaluate_transfer:
             transfer_contact_path = export_transfer_contact(run_root, run_name, stages)
