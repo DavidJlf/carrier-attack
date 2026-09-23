@@ -26,8 +26,8 @@ from torchvision.models import ResNet50_Weights
 HERE = Path(__file__).resolve().parent
 TEACHER_ORIGINAL = HERE / "flux_kontext_inpaint_attack.py"
 INPAINTING_CLEAN_GATE = HERE / "run_inpainting_clean_gate.py"
-DEFAULT_OUTPUT_ROOT = Path("/root/autodl-tmp/FLUX_FORMAL_MASTER/experiments/manual_runs")
-DEFAULT_SAM_PYTHON = Path("/root/autodl-tmp/sam3/env/bin/python")
+DEFAULT_OUTPUT_ROOT = Path("outputs")
+DEFAULT_SAM_PYTHON = Path(os.environ.get("SAM_PYTHON", sys.executable))
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="One-image carrier construction and CRA/JIA/CIRA automation."
@@ -122,6 +122,7 @@ def parse_args() -> argparse.Namespace:
             "Inference-only transfer models. New runs include ResNet-101 by default."
         ),
     )
+    parser.add_argument("--evaluate-transfer", action="store_true", help="Optional black-box transfer evaluation after the white-box run.")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -610,7 +611,6 @@ def main() -> None:
             "classifier_scale": args.attack_scale,
             "progress": "50->35->50",
             "attack_steps": 15,
-            "protect_subject_trajectory": False,
         },
     }
     manifest_path = run_root / "manifest.json"
@@ -679,13 +679,7 @@ def main() -> None:
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     env = os.environ.copy()
-    env.update(
-        {
-            "HF_HOME": "/root/autodl-tmp/hf_home",
-            "HF_HUB_OFFLINE": "1",
-            "TRANSFORMERS_OFFLINE": "1",
-        }
-    )
+    # Model cache and online/offline behavior follow the caller's environment.
     started = time.time()
 
     # Gate 1: segmentation. Merge multiple same-concept instances into one mask.
@@ -872,9 +866,8 @@ def main() -> None:
             _, gradcam = run_top1_gradcam(flux_python, inpainting_return_dir, assets / "subject_mask.png", logs / "09b_inpainting_return_gradcam.log", env, args.dry_run)
         stages.append({"method": "cira", "exit_code": code, "output": str(inpainting_return_dir), "gradcam": gradcam})
 
-    # ResNet-50 remains the only white-box attack model. Reuse each fixed
-    # attacked.png for inference-only evaluation on the black-box models.
-    for stage_index, stage in enumerate(stages, start=1):
+    # Optional: evaluate fixed white-box outputs on separate black-box models.
+    for stage_index, stage in enumerate(stages, start=1) if args.evaluate_transfer else []:
         output = Path(stage["output"])
         if stage["exit_code"] != 0:
             stage["transfer_exit_code"] = None
@@ -904,7 +897,8 @@ def main() -> None:
         stage["final_eval"] = read_json(output / "attack_eval.json")
         stage["transfer_eval"] = read_json(output / "transfer_eval.json")
         stage["steps"] = step_summary(output / "attack_steps.csv")
-    write_transfer_summary(stages, run_root / "transferability_summary.csv")
+    if args.evaluate_transfer:
+        write_transfer_summary(stages, run_root / "transferability_summary.csv")
     contact_path = None
     transfer_contact_path = None
     if not args.dry_run:
@@ -912,7 +906,8 @@ def main() -> None:
             run_root, run_name, source, assets, stages, selected_methods,
             inpainting_return_preparation_root, teacher_root, args.attack_scale,
         )
-        transfer_contact_path = export_transfer_contact(run_root, run_name, stages)
+        if args.evaluate_transfer:
+            transfer_contact_path = export_transfer_contact(run_root, run_name, stages)
     summary = {
         "run_root": str(run_root),
         "elapsed_seconds": time.time() - started,

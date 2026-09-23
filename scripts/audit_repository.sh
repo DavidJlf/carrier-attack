@@ -2,8 +2,8 @@
 set -euo pipefail
 
 forbidden='\.(png|jpe?g|webp|gif|bmp|tiff?|safetensors|ckpt|pt|pth|bin|onnx|xlsx?|zip|tar|tgz|gz)$'
-bad_files="$(git ls-files | grep -Eai "$forbidden" || true)"
-bad_paths="$(git ls-files | grep -E '(^|/)(data|references|subject_samples|outputs|results|runs|logs|weights|loras|checkpoints)/' || true)"
+bad_files="$(git ls-files | grep -Eai "$forbidden" | grep -Ev '^data/dreambooth_references/[^/]+/[^/]+\.jpg$' || true)"
+bad_paths="$(git ls-files | grep -E '(^|/)(subject_samples|outputs|results|runs|logs|weights|loras|checkpoints)/|^data/' | grep -Ev '^data/dreambooth_references/([^/]+/[^/]+\.jpg|references_and_licenses\.txt|LICENSE\.md)$' || true)"
 secret_hits="$(git grep -InE '(hf_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})' -- . ':(exclude)scripts/audit_repository.sh' || true)"
 
 if [[ -n "$bad_files$bad_paths$secret_hits" ]]; then

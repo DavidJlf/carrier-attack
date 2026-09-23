@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """CRA route: partial FLUX RF inversion followed by whole-image attack.
 
-The existing mask-protected ``sdxl_flux_attack.py`` is imported read-only.  We
-reuse its FLUX Kontext VAE, rectified-flow Euler inversion, classifier velocity
+The local ``flux_attack.py`` supplies the FLUX Kontext VAE, rectified-flow Euler inversion, classifier velocity
 update, LoRA loading, decoding, metrics, and output logic.  The only algorithmic
 change is to keep the low-noise suffix of the full sigma grid, so inversion
 stops at an intermediate sigma and forward attack traverses only that suffix.
@@ -20,7 +19,7 @@ from types import ModuleType
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_BASE = SCRIPT_DIR.parent / "cv_background_attack" / "sdxl_flux_attack.py"
+DEFAULT_BASE = SCRIPT_DIR / "flux_attack.py"
 
 
 def parse_wrapper_args() -> tuple[argparse.Namespace, list[str]]:
@@ -65,7 +64,7 @@ def main() -> None:
     if not 0 < wrapper.return_to_progress < wrapper.full_steps:
         raise ValueError("--return-to-progress must be in (0, full_steps)")
 
-    # Teacher's 50 -> 30 -> 50 wording counts completed generation progress.
+    # 50 -> 30 -> 50 counts completed generation progress.
     # Therefore the image is inverted across only the last 20 intervals, then
     # attacked while traversing those same 20 low-noise intervals forward.
     partial_intervals = wrapper.full_steps - wrapper.return_to_progress
@@ -74,8 +73,7 @@ def main() -> None:
 
     # The base attack uses model-level CPU offload, whose transformer-attention
     # peak can still fill a 48 GiB GPU at 768px. Redirect only this imported
-    # process to submodule-level sequential offload. The original protected
-    # attack source file remains untouched.
+    # process to submodule-level sequential offload.
     pipeline_class = base.FluxKontextPipeline
     original_model_offload = pipeline_class.enable_model_cpu_offload
     original_set_adapters = pipeline_class.set_adapters

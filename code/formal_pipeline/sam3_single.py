@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
-        "--checkpoint", default="/root/autodl-tmp/sam3/checkpoints/sam3.pt"
+        "--checkpoint", default=os.environ.get("SAM3_CHECKPOINT", "sam3.pt")
     )
     parser.add_argument("--confidence-threshold", type=float, default=0.5)
     return parser.parse_args()

@@ -5,16 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 
 HERE = Path(__file__).resolve().parent
-PYTHON = Path("/root/autodl-tmp/venvs/flux/bin/python")
+PYTHON = Path(os.environ.get("FLUX_PYTHON", sys.executable))
 QWEN = HERE / "qwen_composite_gate.py"
 GENERATOR = HERE / "generate_composite.py"
-MODEL = Path("/root/autodl-tmp/models/Qwen2.5-VL-7B-Instruct")
+MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
 
 
 def parse_args() -> argparse.Namespace:

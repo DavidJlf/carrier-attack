@@ -17,9 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subject_mask", required=True)
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--model_id", default="black-forest-labs/FLUX.1-Kontext-dev")
-    # Diffusers cache_dir points at the Hugging Face hub cache itself. HF_HOME
-    # is its parent, so using /root/autodl-tmp/hf_home here misses snapshots.
-    parser.add_argument("--cache_dir", default="/root/autodl-tmp/hf_home/hub")
+    parser.add_argument("--cache_dir", default=None, help="Optional Hugging Face hub cache directory.")
     parser.add_argument("--lora_path", required=True)
     parser.add_argument("--lora_scale", type=float, default=1.0)
     parser.add_argument("--num_steps", type=int, default=50)

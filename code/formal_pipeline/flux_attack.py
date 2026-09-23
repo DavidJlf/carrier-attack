@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FLUX input/prompt classifier attack with RF inversion and mask trajectory protection.
+"""FLUX classifier attack with RF inversion and global guidance.
 
 This is a FLUX-native port of the experiment structure in ``sdxl_attack_input.py``.
 It is deliberately independent from the FLUX inpainting attack:
@@ -8,7 +8,7 @@ It is deliberately independent from the FLUX inpainting attack:
 * input mode VAE-encodes an existing composite and performs full rectified-flow
   (Euler/ODE) inversion to obtain a clean pivot trajectory;
 * the denoising velocity is modified by a differentiable ImageNet classifier;
-* ``--protect_subject_trajectory`` restores the clean subject pivot at every step.
+* the classifier-guided update applies to the whole latent.
 
 FLUX Kontext is guidance-distilled and has no SDXL unconditional CFG branch.
 Consequently, ``--use_null_text`` is accepted as a compatibility switch but maps
@@ -156,23 +156,6 @@ def decode_latents(pipe, packed: torch.Tensor, height: int, width: int) -> torch
 def tensor_to_pil(image: torch.Tensor) -> Image.Image:
     array = image.detach().cpu()[0].permute(1, 2, 0).numpy()
     return Image.fromarray(np.clip(array * 255.0, 0, 255).round().astype(np.uint8))
-
-
-def prepare_subject_mask(
-    path: Optional[str], height: int, width: int, packed_like: torch.Tensor
-) -> Optional[torch.Tensor]:
-    if not path:
-        return None
-    mask = Image.open(path).convert("L").resize((width, height), Image.Resampling.NEAREST)
-    array = np.asarray(mask, dtype=np.float32) / 255.0
-    mask_t = torch.from_numpy(array)[None, None].to(
-        device=packed_like.device, dtype=packed_like.dtype
-    )
-    latent_h = 2 * (height // 16)
-    latent_w = 2 * (width // 16)
-    mask_t = F.interpolate(mask_t, size=(latent_h, latent_w), mode="nearest")
-    channels = packed_like.shape[-1] // 4
-    return pack_latents(mask_t.repeat(1, channels, 1, 1)).clamp(0, 1)
 
 
 def model_velocity(
@@ -362,14 +345,12 @@ def run_forward(
     ids,
     args,
     victim,
-    subject_mask=None,
     pivots=None,
     attack=True,
 ):
     latents = initial.detach().clone()
     embeds, pooled, text_ids = prompt_data
     records = []
-    background = None if subject_mask is None else 1 - subject_mask
     progress_name = (
         "FLUX adversarial denoising" if attack else "FLUX clean reconstruction"
     )
@@ -407,12 +388,10 @@ def run_forward(
                 args.objective,
                 args.attack_sign,
                 args.normalize_grad,
-                background,
+                None,
                 args.max_update_norm if args.clip_mode == "l2" else None,
             )
         latents = latents + (next_sigma - sigma) * velocity
-        if args.protect_subject_trajectory and subject_mask is not None and pivots is not None:
-            latents = subject_mask * pivots[step + 1] + background * latents
         records.append(
             StepRecord(
                 step=step + 1,
@@ -446,8 +425,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow_download", dest="local_files_only", action="store_false")
     parser.add_argument("--input_image")
     parser.add_argument("--single_image_attack", action="store_true")
-    parser.add_argument("--subject_mask")
-    parser.add_argument("--protect_subject_trajectory", action="store_true")
     parser.add_argument("--prompt", default="a realistic photograph")
     parser.add_argument(
         "--inversion_prompt",
@@ -505,10 +482,6 @@ def main() -> None:
     input_mode = bool(args.single_image_attack or args.input_image)
     if args.single_image_attack and not args.input_image:
         raise ValueError("--single_image_attack requires --input_image")
-    if args.protect_subject_trajectory and not input_mode:
-        raise ValueError("--protect_subject_trajectory requires input-image mode")
-    if args.protect_subject_trajectory and not args.subject_mask:
-        raise ValueError("--protect_subject_trajectory requires --subject_mask")
     if args.lora_path and (args.use_unet_lora or args.use_text_encoder_lora):
         print("[WARN] SDXL LoRA component flags are ignored; loading the path as a FLUX adapter.")
     if args.pivot_correction is None:
@@ -564,14 +537,12 @@ def main() -> None:
     ids = torch.cat([target_ids, context_ids], dim=0)
 
     pivots = None
-    subject = None
     if input_mode:
         source_image = load_image(args.input_image, args.height, args.width)
         source_image.save(output / "input.png")
         source_image.save(images_dir / f"{run_name}_SOURCE_resized.png")
         z0 = encode_image(pipe, source_image, execution_device, dtype)
         context = z0.detach().clone()
-        subject = prepare_subject_mask(args.subject_mask, args.height, args.width, z0)
         pivots = rf_invert(
             pipe,
             z0,
@@ -598,7 +569,7 @@ def main() -> None:
     if input_mode and not args.skip_clean_baseline:
         clean_latents, clean_records = run_forward(
             pipe, initial, context, sigmas, prompt_data, ids, args, victim,
-            subject_mask=subject, pivots=pivots, attack=False
+            pivots=pivots, attack=False
         )
         clean_image = tensor_to_pil(decode_latents(pipe, clean_latents, args.height, args.width))
         clean_image.save(output / "clean_reconstruction.png")
@@ -609,7 +580,7 @@ def main() -> None:
 
     attacked_latents, records = run_forward(
         pipe, initial, context, sigmas, prompt_data, ids, args, victim,
-        subject_mask=subject, pivots=pivots, attack=not args.generation_only
+        pivots=pivots, attack=not args.generation_only
     )
     attacked = tensor_to_pil(decode_latents(pipe, attacked_latents, args.height, args.width))
     image_name = "composite.png" if args.generation_only else "attacked.png"

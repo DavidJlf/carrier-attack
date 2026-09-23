@@ -1,100 +1,30 @@
-# Carrier-Based Personalized Adversarial Generation
+# LET THE CARRIER CARRY THE ATTACK: PRESERVING THE SUBJECT IN ADVERSARIAL IMAGE GENERATION
 
-This repository provides the implementation used to reproduce subject-specific FLUX LoRA training, subject-sample generation, carrier construction, CRA, JIA, CIRA, No-Carrier experiments, transfer evaluation, subject-preservation evaluation, and result aggregation.
+Anonymous ICLR submission — reproducibility code for the white-box, subject-preserving adversarial image generation pipeline. This repository is intended for reviewers and researchers to reproduce a single subject/target run, not a fixed list of our experimental cases.
 
-The repository contains code and experiment configuration files. Personalized reference images, selected subject samples, trained LoRA weights, foundation-model checkpoints, and previously generated experiment outputs are not redistributed. The scripts generate their own runtime images, per-step CSV files, evaluation JSON files, transfer results, Grad-CAM visualizations, manifests, and final summary tables.
+## What is included
 
-## 1. Environment
+- `data/dreambooth_references/`: reference photographs for 20 DreamBooth subjects (106 images in total), with the original dataset license and provenance notes. These are LoRA training inputs, **not** the selected clean subject samples used in our experiments.
+- `code/lora/`: the existing FLUX LoRA training launcher and 200-candidate subject-sample generator.
+- `code/formal_pipeline/flux_auomation.py`: the original one-image automation, adapted for generic configuration. It constructs carriers and runs CRA, JIA and CIRA against the white-box classifier. Grad-CAM overlays and a contact sheet are produced for a completed run.
+- `scripts/`: shell entry points and a repository-content audit.
 
-```bash
-conda env create -f environment.yml
-conda activate carrier-repro
-accelerate config
-```
+Trained LoRA weights, selected clean samples, model checkpoints, prior results and case-specific CSV files are not distributed. **A new run does generate its own CSV/JSON metrics and images** under the configured output directory; those outputs are Git-ignored. The absence of precomputed results does not disable result generation.
 
-The pipeline additionally requires FLUX.1-Kontext-dev, the official Diffusers `train_dreambooth_lora_flux.py` trainer, SAM3, Qwen2.5-VL-7B-Instruct, DINOv3 ViT-L/16, and torchvision ImageNet classifiers. Set local paths in `configs/subject.env`; the supplied example contains placeholders only.
+## Environment
 
-## 2. Train the subject-specific LoRAs
+The pipeline requires a Linux NVIDIA GPU with enough memory for FLUX and the selected evaluation models. Create the base environment with `conda env create -f environment.yml && conda activate carrier-repro`. Obtain access to `black-forest-labs/FLUX.1-Kontext-dev` and install the official Diffusers repository; point `FLUX_LORA_TRAINER` to its `examples/dreambooth/train_dreambooth_lora_flux.py`. Install/configure SAM3 and provide its checkpoint via `SAM3_REPO` and `SAM3_CHECKPOINT`. Qwen2.5-VL is used by the carrier quality gate; set `QWEN_MODEL` to a local directory or accessible model ID. DINOv3 is optional for subject-preservation evaluation. Model licenses and access requirements apply separately.
 
-Prepare the provided DreamBooth reference images locally for each of the 20 subjects. For each subject, set its subject name, `[V] subject` instance prompt, reference directory, output directory, and model paths, then run:
+## Reproduce one white-box run
 
-```bash
-bash scripts/01_train_lora.sh configs/subject.env
-```
+Copy `configs/subject.env.example` to `configs/subject.env`, then fill in the model paths, one reference directory, subject and ImageNet source/target classes, visible carrier, and private output paths. `configs/subject.env` is ignored by Git. Commands are run from the repository root.
 
-The launcher uses the official Diffusers FLUX DreamBooth LoRA trainer. It prints the full command first; set `EXECUTE=1` to start training.
+1. Train a subject LoRA from its included reference photographs: `bash scripts/01_train_lora.sh configs/subject.env`. Initially `EXECUTE=0` prints/checks the command; set `EXECUTE=1` to launch training.
+2. Generate 200 LoRA subject-sample candidates: `bash scripts/02_generate_subject_samples.sh configs/subject.env`. This generates the images and their `metadata.csv` locally. Inspect them and choose one image containing a clear, single subject with minimal duplication/ghosting; set `SOURCE_IMAGE` to that image. The selected sample is not supplied by this repository.
+3. Run carrier construction and white-box attacks: `bash scripts/03_run_carrier_attacks.sh configs/subject.env`. The script first supports a dry run (`EXECUTE=0`); with `EXECUTE=1`, it prepares the carrier, performs the quality gate, runs CRA/JIA/CIRA, and writes the per-method outputs, Grad-CAM overlays, `summary.json`, and a contact image in `OUTPUT_ROOT/RUN_NAME/`. If `DINO_MODEL` is set, it also evaluates subject preservation with DINOv3 and SAM3 and writes `subject_preservation/preservation_by_method.csv` and `preservation.json`.
 
-## 3. Generate 200 subject samples
+`bash scripts/run_all.sh configs/subject.env` chains these stages. It stops after generating candidates until a valid `SOURCE_IMAGE` is selected; image selection is intentionally a manual quality-control step. For a subsequent attack-only run, use step 3 directly rather than retraining the LoRA.
 
-For each trained LoRA:
+The main path is white-box. Black-box transfer evaluation is optional: pass `--evaluate-transfer` when invoking `code/formal_pipeline/flux_auomation.py` directly. It is not run by `scripts/03_run_carrier_attacks.sh` and is not required for the paper's principal reproduction path.
 
-```bash
-bash scripts/02_generate_subject_samples.sh configs/subject.env
-```
-
-The original generation program creates 200 unique prompt/seed combinations and writes generated images, prompt text files, and `metadata.csv`. Select one clean sample with a single dominant subject, minimal ghosting, no duplicated body parts, and little distracting content. We refer to the selected clean generation as a **subject sample**.
-
-`code/lora/select_subject_samples.py` retains the original SAM3-based ranking and contact-sheet workflow for optional automatic pre-screening.
-
-## 4. Carrier construction and attacks
-
-Set `SOURCE_IMAGE` to the selected subject sample and run:
-
-```bash
-bash scripts/03_run_carrier_attacks.sh configs/subject.env
-```
-
-The default method set is `cra,jia,cira`:
-
-- **CRA**: carrier composite followed by the global finite-return classifier attack.
-- **JIA**: joint mask-guided inpainting and classifier-guided optimization.
-- **CIRA**: independent clean inpainting followed by the global finite-return classifier attack.
-
-SAM3 masks are used for clean carrier construction and inpainting. The historical protected-mask output-directory creation is commented out in `flux_auomation.py`; the public orchestration creates CRA, JIA, and CIRA routes only.
-
-Keep `EXECUTE=0` for command inspection. After checking the resolved paths and commands, set `EXECUTE=1`.
-
-## 5. Formal batches and evaluation
-
-The original formal experiment programs are retained under `code/formal_pipeline/`:
-
-- `run_formal_17x30_shard.py`: Target Carrier, Non-Target Carrier, and Hybrid Carrier batches;
-- `run_no_carrier_20x30_shard.py`: No-Carrier batches;
-- `flux_auomation.py`: per-case construction, CRA/JIA/CIRA, Grad-CAM, and transfer evaluation;
-- `evaluate_subject_preservation_batch.py`: DINOv3 and SAM3 preservation evaluation;
-- `summarize_formal_1200.py`: final CSV/JSON aggregation;
-- `audit_hybrid_600.py`: Hybrid Carrier completeness audit.
-
-Update `code/formal_pipeline/dreambooth_20_sources.csv` with local subject-sample and LoRA paths before launching a formal shard:
-
-```bash
-cd code/formal_pipeline
-python run_formal_17x30_shard.py \
-  --num-shards 1 \
-  --shard-index 0 \
-  --construction-condition hybrid \
-  --dry-run
-```
-
-Remove `--dry-run` only after all asset and model paths have been verified.
-
-## 6. Convenience entry point
-
-When the configuration already points to a trained LoRA and selected subject sample:
-
-```bash
-bash scripts/run_all.sh configs/subject.env
-```
-
-On a first run, subject selection remains a manual quality-control step between generation and attack execution.
-
-## Repository layout
-
-```text
-code/
-  lora/             # original LoRA launcher, 200-sample generator, SAM3 ranking
-  formal_pipeline/  # original construction, attack, evaluation, aggregation
-configs/            # local path template
-scripts/            # shell entry points
-environment.yml
-```
+The reference photographs are redistributed under the included DreamBooth dataset terms. Before publishing any derivative repository, inspect the files and license yourself with `bash scripts/audit_repository.sh`.

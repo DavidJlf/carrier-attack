@@ -16,7 +16,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from torchvision.models import ResNet50_Weights, resnet50
 
 
-DEFAULT_MODEL = "/root/autodl-tmp/models/Qwen2.5-VL-7B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
 REQUIRED_PROMPT_PHRASES = (
     "exactly one",
     "in the distant background",

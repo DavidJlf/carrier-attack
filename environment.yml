@@ -22,3 +22,4 @@ dependencies:
       - numpy>=1.26
       - tqdm>=4.66
       - opencv-python-headless>=4.10
+      - qwen-vl-utils>=0.0.8

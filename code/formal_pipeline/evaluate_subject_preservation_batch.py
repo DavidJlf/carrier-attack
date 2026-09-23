@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resumable formal SAM3 + DINOv3 preservation evaluation for 1200 cases."""
+"""SAM3 and DINOv3 preservation evaluation for an automation run."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ CARRIER_NAMES = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--run-root", type=Path, help="Completed flux_auomation.py run directory")
     parser.add_argument("--case-index", type=Path)
     parser.add_argument("--method-results", type=Path)
     parser.add_argument("--transfer-results", type=Path)
@@ -40,11 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--padding", type=float, default=0.10)
     parser.add_argument("--confidence-threshold", type=float, default=0.5)
     parser.add_argument(
-        "--sam3-python", default="/root/autodl-tmp/sam3/env/bin/python"
+        "--sam3-python", default=os.environ.get("SAM_PYTHON", sys.executable)
     )
     parser.add_argument(
         "--sam3-checkpoint",
-        default="/root/autodl-tmp/sam3/checkpoints/sam3.pt",
+        default=os.environ.get("SAM3_CHECKPOINT", "sam3.pt"),
     )
     parser.add_argument("--sam3-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--manifest", type=Path, help=argparse.SUPPRESS)
@@ -110,7 +111,9 @@ def prepare_sam3_import() -> None:
         for entry in sys.path
         if str(Path(entry or ".").resolve()) != script_parent
     ]
-    sys.path.insert(0, "/root/autodl-tmp/sam3/repo")
+    sam3_repo = os.environ.get("SAM3_REPO")
+    if sam3_repo:
+        sys.path.insert(0, sam3_repo)
 
 
 def run_sam3_worker(args: argparse.Namespace) -> None:
@@ -351,6 +354,82 @@ def summarize(rows: list[dict], black_models: list[str]) -> list[dict]:
     return output
 
 
+def run_single(args: argparse.Namespace) -> None:
+    """Apply the existing independent SAM3/DINOv3 measurements to one run."""
+    if args.model is None:
+        raise SystemExit("--model is required with --run-root")
+    run_root = args.run_root.expanduser().resolve()
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    sam_meta = json.loads((run_root / "assets" / "sam3_meta.json").read_text(encoding="utf-8"))
+    output_dir = args.output or run_root / "subject_preservation"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pairs = []
+    entries = []
+    for stage in summary["methods"]:
+        method = stage["method"]
+        method_dir = Path(stage["output"])
+        clean = method_dir / ("clean.png" if method == "jia" else "input.png")
+        attacked = method_dir / "attacked.png"
+        if not clean.is_file() or not attacked.is_file():
+            raise FileNotFoundError(f"Missing clean/attacked pair for {method}: {clean}, {attacked}")
+        pairs.append((method, clean, attacked))
+        for role, image_path in (("clean", clean), ("attacked", attacked)):
+            mask_dir = output_dir / "masks" / method
+            entries.append({
+                "id": f"{method}|{role}", "method": method, "role": role,
+                "image": str(image_path), "prompt": sam_meta["prompt"],
+                "mask": str(mask_dir / f"{role}_mask.png"),
+                "meta": str(mask_dir / f"{role}_sam3.json"),
+            })
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps({"images": entries}, indent=2), encoding="utf-8")
+    print(json.dumps({"run_root": str(run_root), "pairs": len(pairs), "mode": "execute" if args.execute else "dry_run"}), flush=True)
+    if not args.execute:
+        return
+    worker = [
+        args.sam3_python, str(Path(__file__).resolve()), "--sam3-worker",
+        "--manifest", str(manifest_path), "--sam3-checkpoint", args.sam3_checkpoint,
+        "--confidence-threshold", str(args.confidence_threshold),
+    ]
+    if args.resume:
+        worker.append("--resume")
+    subprocess.run(worker, check=True, cwd=os.environ.get("SAM3_REPO") or None)
+
+    install_torch_compatibility()
+    import torch
+    import torch.nn.functional as F
+    from PIL import Image
+    from transformers import AutoImageProcessor, AutoModel
+
+    processor = AutoImageProcessor.from_pretrained(args.model, local_files_only=True)
+    model = AutoModel.from_pretrained(args.model, local_files_only=True, torch_dtype=torch.float32).eval().cuda()
+    rows = []
+    for method, clean, attacked in pairs:
+        mask_dir = output_dir / "masks" / method
+        clean_meta = json.loads((mask_dir / "clean_sam3.json").read_text(encoding="utf-8"))
+        adv_meta = json.loads((mask_dir / "attacked_sam3.json").read_text(encoding="utf-8"))
+        row = {"method": method, "clean_detected": bool(clean_meta["detected"]),
+               "attacked_detected": bool(adv_meta["detected"]), "dino_cls_cosine": "", "mask_iou": ""}
+        if row["clean_detected"] and row["attacked_detected"]:
+            clean_image = Image.open(clean).convert("RGB")
+            attacked_image = Image.open(attacked).convert("RGB")
+            if clean_image.size != attacked_image.size:
+                raise ValueError(f"Canvas mismatch for {method}: {clean_image.size} vs {attacked_image.size}")
+            clean_mask = load_mask(mask_dir / "clean_mask.png", clean_image.size)
+            adv_mask = load_mask(mask_dir / "attacked_mask.png", attacked_image.size)
+            row.update(compute_mask_metrics(clean_mask, adv_mask))
+            crop_box = union_crop_box(clean_mask, adv_mask, args.padding)
+            images = [crop_subject(clean, clean_mask, crop_box), crop_subject(attacked, adv_mask, crop_box)]
+            inputs = {key: value.cuda() for key, value in processor(images=images, return_tensors="pt").items()}
+            with torch.inference_mode():
+                embeddings = F.normalize(model(**inputs).pooler_output.float(), dim=-1)
+            row["dino_cls_cosine"] = float((embeddings[0] * embeddings[1]).sum().cpu())
+        rows.append(row)
+    write_csv_atomic(output_dir / "preservation_by_method.csv", rows)
+    (output_dir / "preservation.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    print(json.dumps(rows, indent=2), flush=True)
+
+
 def run_main(args: argparse.Namespace) -> None:
     required = [args.case_index, args.method_results, args.model, args.output]
     if any(item is None for item in required):
@@ -385,7 +464,7 @@ def run_main(args: argparse.Namespace) -> None:
     ]
     if args.resume:
         worker.append("--resume")
-    subprocess.run(worker, check=True, cwd="/root/autodl-tmp/sam3/repo")
+    subprocess.run(worker, check=True, cwd=os.environ.get("SAM3_REPO") or None)
 
     install_torch_compatibility()
     import numpy as np
@@ -516,5 +595,7 @@ if __name__ == "__main__":
         if parsed.manifest is None:
             raise SystemExit("--manifest is required in SAM3 worker mode")
         run_sam3_worker(parsed)
+    elif parsed.run_root is not None:
+        run_single(parsed)
     else:
         run_main(parsed)
