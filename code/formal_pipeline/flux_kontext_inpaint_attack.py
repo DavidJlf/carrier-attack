@@ -43,7 +43,7 @@ anyway.
 
 Example
 -------
-    python inpainting_attack.py \
+    python flux_kontext_inpaint_attack.py \
         --image outputs/sam3_inpaint/base.png \
         --mask outputs/sam3_flux_inpaint/inpaint_mask.png \
         --inpaint-prompt "a dog and a fox in the background" \

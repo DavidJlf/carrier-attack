@@ -7,14 +7,16 @@ set -a
 source "$CONFIG"
 set +a
 
-EXECUTE_FLAG=()
-[[ "${EXECUTE:-0}" == "1" ]] && EXECUTE_FLAG=(--execute)
+if [[ "${EXECUTE:-0}" != "1" ]]; then
+  echo "Dry run: set EXECUTE=1 to generate the 200 subject samples."
+  echo "python code/lora/generate_subject_samples_200.py --model '$FLUX_MODEL' --lora '$LORA_WEIGHTS' --output '$SUBJECT_SAMPLE_DIR' --token '$CONCEPT_TOKEN' --subject '$SUBJECT' --seed-base '${SEED:-0}'"
+  exit 0
+fi
 
-"${PYTHON_BIN:-python}" training/generate_subject_samples.py \
-  --model-id "$FLUX_MODEL" \
-  --lora-path "$LORA_WEIGHTS" \
-  --prompt "$SAMPLE_PROMPT" \
-  --output-dir "$SUBJECT_SAMPLE_DIR" \
-  --num-images 200 \
-  --seed "${SEED:-0}" \
-  "${EXECUTE_FLAG[@]}"
+"${PYTHON_BIN:-python}" code/lora/generate_subject_samples_200.py \
+  --model "$FLUX_MODEL" \
+  --lora "$LORA_WEIGHTS" \
+  --output "$SUBJECT_SAMPLE_DIR" \
+  --token "$CONCEPT_TOKEN" \
+  --subject "$SUBJECT" \
+  --seed-base "${SEED:-0}"

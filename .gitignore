@@ -23,8 +23,6 @@ loras/
 *.pth
 *.bin
 *.onnx
-*.csv
-*.tsv
 *.xls
 *.xlsx
 *.zip

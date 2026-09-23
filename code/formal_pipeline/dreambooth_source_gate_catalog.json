@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "classifier": "torchvision ResNet-50 ImageNet-1K V2",
+  "pass_rule": "any allowed source class at rank <= 10 on the full final composite",
+  "cases": {
+    "backpack": {"enabled": true, "classes": [414]},
+    "bear_plushie": {"enabled": true, "classes": [850]},
+    "candle": {"enabled": true, "classes": [470]},
+    "cat": {"enabled": true, "classes": [281, 282, 283, 284, 285, 287]},
+    "cat2": {"enabled": true, "classes": [281, 282, 283, 284, 285, 287]},
+    "dog": {"enabled": true, "classes": [157, 230, 231, 232, 259, 263, 264]},
+    "dog2": {"enabled": true, "classes": [200, 207, 244, 255, 256, 257, 260]},
+    "dog3": {"enabled": true, "classes": [153, 200, 265, 266, 267]},
+    "dog5": {"enabled": true, "classes": [205, 207, 208, 213, 215, 231]},
+    "dog7": {"enabled": true, "classes": [205, 207, 208, 209, 211, 213, 220]},
+    "duck_toy": {"enabled": true, "classes": [], "reason": "no exact ImageNet source class; source loss weight is zero"},
+    "fancy_boot": {"enabled": true, "classes": [502, 514, 630, 770, 774]},
+    "grey_sloth_plushie": {"enabled": true, "classes": [850]},
+    "pink_sunglasses": {"enabled": true, "classes": [836, 837]},
+    "poop_emoji": {"enabled": true, "classes": [], "reason": "no exact ImageNet source class; source loss weight is zero"},
+    "rc_car": {"enabled": true, "classes": [573, 751, 817]},
+    "robot_toy": {"enabled": true, "classes": [], "reason": "no exact ImageNet source class; source loss weight is zero"},
+    "shiny_sneaker": {"enabled": true, "classes": [514, 630, 770, 774, 788]},
+    "teapot": {"enabled": true, "classes": [505, 849]},
+    "vase": {"enabled": true, "classes": [883]}
+  }
+}

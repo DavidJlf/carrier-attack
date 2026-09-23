@@ -10,7 +10,7 @@ set +a
 RUN_FLAG=(--dry-run)
 [[ "${EXECUTE:-0}" == "1" ]] && RUN_FLAG=()
 
-"${PYTHON_BIN:-python}" src/carrier/run_pipeline.py \
+"${PYTHON_BIN:-python}" code/formal_pipeline/flux_auomation.py \
   --image "$SOURCE_IMAGE" \
   --subject "$SUBJECT" \
   --source-case "$SUBJECT" \
@@ -23,4 +23,5 @@ RUN_FLAG=(--dry-run)
   --methods "${METHODS:-cra,jia,cira}" \
   --seed "${SEED:-0}" \
   --output-root "$OUTPUT_ROOT" \
+  --sam-python "${SAM_PYTHON:-${PYTHON_BIN:-python}}" \
   "${RUN_FLAG[@]}"

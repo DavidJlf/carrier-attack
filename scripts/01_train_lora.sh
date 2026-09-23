@@ -10,8 +10,9 @@ set +a
 EXECUTE_FLAG=()
 [[ "${EXECUTE:-0}" == "1" ]] && EXECUTE_FLAG=(--execute)
 
-"${PYTHON_BIN:-python}" training/train_flux_lora.py \
+"${PYTHON_BIN:-python}" code/lora/train_flux_lora.py \
   --trainer "$FLUX_LORA_TRAINER" \
+  --accelerate "${ACCELERATE_BIN:-accelerate}" \
   --model_id "$FLUX_MODEL" \
   --instance_data_dir "$REFERENCE_DIR" \
   --instance_prompt "$INSTANCE_PROMPT" \

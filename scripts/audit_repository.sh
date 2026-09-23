@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-forbidden='\.(png|jpe?g|webp|gif|bmp|tiff?|safetensors|ckpt|pt|pth|bin|onnx|csv|tsv|xlsx?|zip|tar|tgz|gz)$'
+forbidden='\.(png|jpe?g|webp|gif|bmp|tiff?|safetensors|ckpt|pt|pth|bin|onnx|xlsx?|zip|tar|tgz|gz)$'
 bad_files="$(git ls-files | grep -Eai "$forbidden" || true)"
 bad_paths="$(git ls-files | grep -E '(^|/)(data|references|subject_samples|outputs|results|runs|logs|weights|loras|checkpoints)/' || true)"
 secret_hits="$(git grep -InE '(hf_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})' -- . ':(exclude)scripts/audit_repository.sh' || true)"
@@ -14,4 +14,4 @@ if [[ -n "$bad_files$bad_paths$secret_hits" ]]; then
   exit 1
 fi
 
-echo "Repository audit passed: code/config templates only."
+echo "Repository audit passed. Configuration CSV/JSON files are allowed; private assets and generated outputs remain excluded."

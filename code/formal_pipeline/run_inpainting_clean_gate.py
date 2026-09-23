@@ -5,20 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 from PIL import Image, ImageFilter, ImageStat
 
 HERE = Path(__file__).resolve().parent
-PYTHON = Path(sys.executable)
-TEACHER = HERE / "inpainting_attack.py"
+PYTHON = Path("/root/autodl-tmp/venvs/flux/bin/python")
+TEACHER = HERE / "flux_kontext_inpaint_attack.py"
 QWEN = HERE / "qwen_composite_gate.py"
 EVALUATE = HERE / "evaluate_imagenet.py"
-MODEL = Path(os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct"))
-SAM_PYTHON = Path(os.environ.get("SAM_PYTHON", sys.executable))
+MODEL = Path("/root/autodl-tmp/models/Qwen2.5-VL-7B-Instruct")
+SAM_PYTHON = Path("/root/autodl-tmp/sam3/env/bin/python")
 SAM_SCRIPT = HERE / "sam3_single.py"
 
 

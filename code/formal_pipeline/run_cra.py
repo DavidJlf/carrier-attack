@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""CRA: partial FLUX RF inversion followed by a whole-image attack.
+"""CRA route: partial FLUX RF inversion followed by whole-image attack.
 
-The supplied base module provides the FLUX Kontext VAE, rectified-flow Euler inversion, classifier velocity
+The existing mask-protected ``sdxl_flux_attack.py`` is imported read-only.  We
+reuse its FLUX Kontext VAE, rectified-flow Euler inversion, classifier velocity
 update, LoRA loading, decoding, metrics, and output logic.  The only algorithmic
 change is to keep the low-noise suffix of the full sigma grid, so inversion
 stops at an intermediate sigma and forward attack traverses only that suffix.
@@ -19,7 +20,7 @@ from types import ModuleType
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_BASE = SCRIPT_DIR / "cra_attack.py"
+DEFAULT_BASE = SCRIPT_DIR.parent / "cv_background_attack" / "sdxl_flux_attack.py"
 
 
 def parse_wrapper_args() -> tuple[argparse.Namespace, list[str]]:
@@ -51,7 +52,7 @@ def reject_mask_route(tokens: list[str]) -> None:
     used = forbidden.intersection(tokens)
     if used:
         raise ValueError(
-            "Advisor partial-return route is whole-image/no-mask; remove: "
+            "CRA finite-return route is whole-image/no-mask; remove: "
             + ", ".join(sorted(used))
         )
 
@@ -142,7 +143,7 @@ def main() -> None:
     ]
     sys.argv = [sys.argv[0], *base_tokens, *forced]
 
-    print("Advisor FLUX finite-return configuration:")
+    print("CRA FLUX finite-return configuration:")
     print(f"  generation progress: {wrapper.full_steps}->{wrapper.return_to_progress}->{wrapper.full_steps}")
     print(f"  RF inversion intervals: {partial_intervals}")
     print(f"  attacked forward intervals: 1..{partial_intervals}")

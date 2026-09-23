@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automate SAM3, carrier construction, and CRA/CIRA/JIA.
+"""Automate SAM3, carrier construction, and CRA/JIA/CIRA.
 
 The program is deliberately sequential so the four large FLUX jobs never
 compete for the same GPU.  Originals are copied into a new run directory; no
@@ -24,13 +24,13 @@ from torchvision.models import ResNet50_Weights
 
 
 HERE = Path(__file__).resolve().parent
-TEACHER_ORIGINAL = HERE / "inpainting_attack.py"
+TEACHER_ORIGINAL = HERE / "flux_kontext_inpaint_attack.py"
 INPAINTING_CLEAN_GATE = HERE / "run_inpainting_clean_gate.py"
-DEFAULT_OUTPUT_ROOT = Path("outputs")
-DEFAULT_SAM_PYTHON = Path(sys.executable)
+DEFAULT_OUTPUT_ROOT = Path("/root/autodl-tmp/FLUX_FORMAL_MASTER/experiments/manual_runs")
+DEFAULT_SAM_PYTHON = Path("/root/autodl-tmp/sam3/env/bin/python")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="One-image carrier construction plus CRA/CIRA/JIA."
+        description="One-image carrier construction and CRA/JIA/CIRA automation."
     )
     parser.add_argument("--image", required=True, help="Input subject image.")
     parser.add_argument("--target", required=True, help="Exact ImageNet target label.")
@@ -99,7 +99,7 @@ def parse_args() -> argparse.Namespace:
         help="Controlled composite-prompt override used only by Qwen retry rounds.",
     )
     parser.add_argument(
-        "--teacher-prompt",
+        "--jia-prompt", dest="teacher_prompt",
         help="Optional clean/JIA/CIRA inpainting-prompt override.",
     )
     parser.add_argument(
@@ -111,7 +111,7 @@ def parse_args() -> argparse.Namespace:
         default="cra,jia,cira",
         help=(
             "Comma-separated methods to run. Choices: cra, jia, cira. "
-            "Any non-empty subset may be selected."
+            "Any one, any two, or all three may be selected."
         ),
     )
     parser.add_argument(
@@ -318,7 +318,7 @@ def export_run_contact(
     elif "cira" in selected_methods and independent_clean.is_file():
         context_path, context_label = independent_clean, "Independent masked clean inpainting"
     elif teacher_clean.is_file():
-        context_path, context_label = teacher_clean, "Teacher clean inpainting"
+        context_path, context_label = teacher_clean, "JIA clean baseline"
 
     cells = [(0, 0, source, "Original source", None, None, None)]
     if context_path is not None:
@@ -494,7 +494,7 @@ def main() -> None:
     # Do not resolve these symlinks: resolving a venv interpreter points back
     # to the base Miniconda binary and silently bypasses the venv packages.
     flux_python = Path(sys.executable)
-    sam_python = Path(args.sam_python).expanduser()
+    sam_python = Path(shutil.which(args.sam_python) or args.sam_python).expanduser()
     for label, path in (("image", image), ("LoRA", lora), ("SAM Python", sam_python)):
         if not path.exists():
             raise FileNotFoundError(f"{label} not found: {path}")
@@ -512,17 +512,22 @@ def main() -> None:
         raise FileNotFoundError(f"Prepared run does not exist: {run_root}")
     assets = run_root / "assets"
     logs = run_root / "logs"
-    cra_root = run_root / "cra"
-    jia_root = run_root / "jia"
-    cira_root = run_root / "cira"
-    cira_preparation_root = cira_root / "preparation"
+    # Protected-mask experiment outputs are intentionally disabled in this
+    # reproduction package. Keep the historical locations documented without
+    # creating either directory.
+    # protected_root = run_root / "protected_mask"
+    return_root = run_root / "cra"
+    teacher_root = run_root / "jia"
+    inpainting_return_root = run_root / "cira"
+    inpainting_return_preparation_root = inpainting_return_root / "preparation"
+    # inpainting_protected_root = run_root / "inpainting_protected_mask"
     for directory in (
         assets,
         logs,
-        cra_root,
-        jia_root,
-        cira_root,
-        cira_preparation_root,
+        return_root,
+        teacher_root,
+        inpainting_return_root,
+        inpainting_return_preparation_root,
     ):
         directory.mkdir(parents=True, exist_ok=True)
     source = assets / f"source{image.suffix.lower()}"
@@ -605,7 +610,7 @@ def main() -> None:
             "classifier_scale": args.attack_scale,
             "progress": "50->35->50",
             "attack_steps": 15,
-            "attack_scope": "global",
+            "protect_subject_trajectory": False,
         },
     }
     manifest_path = run_root / "manifest.json"
@@ -643,7 +648,7 @@ def main() -> None:
         prepared_visible_anchor = str(manifest.get("visible_anchor", target_label))
         qwen_target_phrase = str(manifest.get("qwen_target_phrase", prepared_visible_anchor))
         # Only the composite-return route follows the Qwen-approved target phrase.
-        # Teacher inpainting and its clean-inpainting return remain independent.
+        # JIA and CIRA construction remain independent.
         attack_prompt = re.sub(
             rf"\b{re.escape(prepared_visible_anchor)}\b",
             qwen_target_phrase,
@@ -674,6 +679,13 @@ def main() -> None:
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     env = os.environ.copy()
+    env.update(
+        {
+            "HF_HOME": "/root/autodl-tmp/hf_home",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+        }
+    )
     started = time.time()
 
     # Gate 1: segmentation. Merge multiple same-concept instances into one mask.
@@ -682,6 +694,7 @@ def main() -> None:
             str(sam_python), str(HERE / "sam3_single.py"),
             "--image", str(source), "--prompt", args.subject,
             "--output-dir", str(assets),
+            "--merge-multiple",
         ]
         code = run_logged("SAM3 subject-mask union", sam_command, logs / "01_sam3.log", env, args.dry_run)
         if code != 0:
@@ -734,9 +747,9 @@ def main() -> None:
         # Preserve the original composite/Qwen prompt and gate behavior.
         return_command = [
             str(flux_python), str(HERE / "run_cra.py"),
-            "--base-flux-attack", str(HERE / "cra_attack.py"),
+            "--base-flux-attack", str(HERE / "flux_attack.py"),
             "--full-steps", "50", "--return-to-progress", "35",
-            "--run-name", f"scale{args.attack_scale:g}_late15", "--output-root", str(cra_root),
+            "--run-name", f"scale{args.attack_scale:g}_late15", "--output-root", str(return_root),
             "--input_image", str(composite), "--single_image_attack",
             "--prompt", attack_prompt, "--inversion_prompt", attack_prompt,
             "--target_class", str(target_class), "--target_label", target_label,
@@ -749,7 +762,7 @@ def main() -> None:
             "--seed", str(args.seed), "--local_files_only", "--skip_clean_baseline",
             "--lora_path", str(lora), "--lora_scale", str(args.lora_scale),
         ]
-        return_dir = cra_root / f"scale{args.attack_scale:g}_late15"
+        return_dir = return_root / f"scale{args.attack_scale:g}_late15"
         code = run_logged(
             "CRA | carrier finite return 50->35->50 with global guidance",
             return_command, logs / "05_return.log", env, args.dry_run,
@@ -765,19 +778,19 @@ def main() -> None:
         stages.append({"method": "cra", "exit_code": code, "output": str(return_dir), "gradcam": gradcam})
 
     if ({"jia", "cira"} & set(selected_methods)) and not TEACHER_ORIGINAL.is_file():
-        raise FileNotFoundError(f"Teacher original script not found: {TEACHER_ORIGINAL}")
+        raise FileNotFoundError(f"JIA attack script not found: {TEACHER_ORIGINAL}")
 
     if "jia" in selected_methods:
-        teacher_dir = jia_root / f"aligned_rms{args.attack_scale:g}_late35_49"
+        teacher_dir = teacher_root / f"aligned_rms{args.attack_scale:g}_late35_49"
         gate_code = run_logged(
-            "TEACHER CLEAN INPAINTING GATE | generate clean, then classifier/Qwen",
+            "JIA CLEAN GATE | generate clean, then classifier/Qwen",
             [str(flux_python), str(INPAINTING_CLEAN_GATE),
              "--run-root", str(run_root), "--output-dir", str(teacher_dir),
              "--route", "jia"],
             logs / "06a_teacher_clean_gate.log", env, args.dry_run,
         )
         if gate_code != 0:
-            raise RuntimeError(f"Teacher clean inpainting gate failed with exit code {gate_code}")
+            raise RuntimeError(f"JIA clean inpainting gate failed with exit code {gate_code}")
         teacher_gate = {} if args.dry_run else read_json(teacher_dir / "clean_gate.json")
         approved_teacher_prompt = str(teacher_gate.get("prompt", teacher_prompt))
         approved_teacher_seed = int(teacher_gate.get("seed", args.seed))
@@ -791,7 +804,7 @@ def main() -> None:
             "--no-cpu-offload", "--attack-everywhere",
         ]
         code = run_logged(
-            "JOINT INPAINTING | joint generation and adversarial optimization",
+            "JIA | joint inpainting and adversarial optimization",
             teacher_command, logs / "06_jia.log", env, args.dry_run,
             method_number=method_numbers["jia"], method_total=method_total,
             method_output=teacher_dir,
@@ -800,7 +813,7 @@ def main() -> None:
             if not args.dry_run:
                 extract_teacher_step_probabilities(logs / "06_jia.log", target_label, teacher_dir / "attack_steps.csv")
             code = run_logged(
-                "Teacher original matched final evaluation",
+                "JIA matched final evaluation",
                 [str(flux_python), str(HERE / "evaluate_imagenet.py"),
                  "--image", str(teacher_dir / "attacked.png"), "--target-class", str(target_class),
                  "--output", str(teacher_dir / "attack_eval.json")],
@@ -814,12 +827,12 @@ def main() -> None:
     if "cira" in selected_methods:
         # Independently regenerate clean inpainting from the original image,
         # background mask, and inpainting prompt. Never reuse method 2 output.
-        preparation_dir = cira_preparation_root / f"aligned_rms{args.attack_scale:g}_late35_49"
+        preparation_dir = inpainting_return_preparation_root / f"aligned_rms{args.attack_scale:g}_late35_49"
         code = run_logged(
-            "INPAINTING RETURN CLEAN GATE | independently generate clean, then classifier/Qwen",
+            "CIRA CLEAN GATE | independently generate clean, then classifier/Qwen",
             [str(flux_python), str(INPAINTING_CLEAN_GATE),
              "--run-root", str(run_root), "--output-dir", str(preparation_dir),
-             "--route", "inpainting_return"],
+             "--route", "cira"],
             logs / "08_inpainting_return_preparation.log", env, args.dry_run,
         )
         clean_inpainting = preparation_dir / "clean.png"
@@ -831,11 +844,11 @@ def main() -> None:
         approved_return_prompt = str(preparation_gate.get("prompt", teacher_prompt))
         approved_return_seed = int(preparation_gate.get("seed", args.seed))
 
-        inpainting_return_dir = cira_root / f"scale{args.attack_scale:g}_late15"
+        inpainting_return_dir = inpainting_return_root / f"scale{args.attack_scale:g}_late15"
         inpainting_return_command = [
             str(flux_python), str(HERE / "run_cra.py"),
-            "--run-name", f"scale{args.attack_scale:g}_late15", "--output-root", str(cira_root),
-            "--base-flux-attack", str(HERE / "cra_attack.py"),
+            "--run-name", f"scale{args.attack_scale:g}_late15", "--output-root", str(inpainting_return_root),
+            "--base-flux-attack", str(HERE / "flux_attack.py"),
             "--full-steps", "50", "--return-to-progress", "35",
             "--input_image", str(clean_inpainting), "--single_image_attack",
             "--prompt", approved_return_prompt, "--inversion_prompt", approved_return_prompt,
@@ -849,7 +862,7 @@ def main() -> None:
             "--lora_path", str(lora), "--lora_scale", str(args.lora_scale),
         ]
         code = run_logged(
-            "CIRA | clean inpainting followed by 15-step global finite return",
+            "CIRA | independent clean inpainting then 15-step global finite return",
             inpainting_return_command, logs / "09_cira.log", env, args.dry_run,
             method_number=method_numbers["cira"], method_total=method_total,
             method_output=inpainting_return_dir,
@@ -897,7 +910,7 @@ def main() -> None:
     if not args.dry_run:
         contact_path = export_run_contact(
             run_root, run_name, source, assets, stages, selected_methods,
-            cira_preparation_root, jia_root, args.attack_scale,
+            inpainting_return_preparation_root, teacher_root, args.attack_scale,
         )
         transfer_contact_path = export_transfer_contact(run_root, run_name, stages)
     summary = {
