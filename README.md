@@ -27,6 +27,12 @@ Both scripts are dry-run by default. Set `EXECUTE=1` in the local config only af
 bash scripts/03_run_carrier_attacks.sh configs/subject.env
 ```
 
+After `SOURCE_IMAGE` points to an already selected subject sample, the complete configured sequence can also be launched with:
+
+```bash
+bash scripts/run_all.sh configs/subject.env
+```
+
 The public method names are used throughout:
 
 - **CRA**: carrier composite followed by global finite-return attack.
