@@ -22,6 +22,9 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 from torchvision.models import ResNet50_Weights
 
+from carrier_catalog import lookup_carrier
+from hybrid_carrier_prompts import select_hybrid_spec
+
 
 HERE = Path(__file__).resolve().parent
 JIA_ATTACK = HERE / "jia_inpainting_attack.py"
@@ -35,11 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", required=True, help="Input subject image.")
     parser.add_argument("--target", required=True, help="Exact ImageNet target label.")
     parser.add_argument(
-        "--visible-carrier",
-        help=(
-            "Optional visible object used in every generation/inversion prompt. "
-            "The classifier attack objective remains --target/--target-class."
-        ),
+        "--construction-condition", required=True,
+        choices=("target_carrier", "non_target_carrier", "hybrid_carrier"),
     )
     parser.add_argument(
         "--target-class",
@@ -94,35 +94,9 @@ def parse_args() -> argparse.Namespace:
             "generation; attack resumes an existing prepared run after Qwen passes."
         ),
     )
-    parser.add_argument(
-        "--background-prompt",
-        help="Controlled composite-prompt override used only by Qwen retry rounds.",
-    )
-    parser.add_argument(
-        "--jia-prompt", dest="jia_prompt",
-        help="Optional clean/JIA/CIRA inpainting-prompt override.",
-    )
-    parser.add_argument(
-        "--attack-prompt",
-        help="Optional CRA inversion/finite-return scene-prompt override.",
-    )
-    parser.add_argument(
-        "--methods",
-        default="cra,jia,cira",
-        help=(
-            "Comma-separated methods to run. Choices: cra, jia, cira. "
-            "Any one, any two, or all three may be selected."
-        ),
-    )
-    parser.add_argument(
-        "--transfer-models", nargs="+",
-        choices=("resnet101", "vgg19", "inception_v3", "convnext_base", "swin_b"),
-        default=("resnet101", "vgg19", "inception_v3", "convnext_base", "swin_b"),
-        help=(
-            "Inference-only transfer models. New runs include ResNet-101 by default."
-        ),
-    )
-    parser.add_argument("--evaluate-transfer", action="store_true", help="Optional black-box transfer evaluation after the white-box run.")
+    parser.add_argument("--hybrid-feature-clause", default="")
+    parser.add_argument("--hybrid-identity-clause", default="")
+    parser.add_argument("--hybrid-forbidden-clause", default="")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -213,23 +187,6 @@ def read_json(path: Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_transfer_summary(stages: list[dict], output: Path) -> None:
-    """Combine existing per-method black-box results without rerunning models."""
-    rows = []
-    for stage in stages:
-        payload = read_json(Path(stage["output"]) / "transfer_eval.json")
-        if not payload:
-            continue
-        for result in payload.get("models", []):
-            rows.append({"method": stage["method"], **result})
-    if not rows:
-        return
-    with output.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def run_top1_gradcam(
     flux_python: Path,
     method_dir: Path,
@@ -291,11 +248,10 @@ def export_run_contact(
     jia_root: Path,
     attack_scale: float,
 ) -> Path:
-    """Export one run contact with white-box, Grad-CAM, and transfer results."""
+    """Export the white-box results and Grad-CAM contact image."""
     contacts = run_root / "contacts"
     contacts.mkdir(parents=True, exist_ok=True)
-    # The extra caption height keeps four black-box transfer rows legible.
-    tile, cap, gap, title_h = 390, 176, 18, 64
+    tile, cap, gap, title_h = 390, 120, 18, 64
     columns = 1 + len(stages)
     canvas = Image.new(
         "RGB",
@@ -321,18 +277,17 @@ def export_run_contact(
     elif jia_clean.is_file():
         context_path, context_label = jia_clean, "JIA clean baseline"
 
-    cells = [(0, 0, source, "Original source", None, None, None)]
+    cells = [(0, 0, source, "Original source", None, None)]
     if context_path is not None:
-        cells.append((1, 0, context_path, context_label, None, None, None))
+        cells.append((1, 0, context_path, context_label, None, None))
     for col, stage in enumerate(stages, 1):
         method_dir = Path(stage["output"])
         evaluation = stage.get("final_eval")
         cam = stage.get("gradcam")
-        transfer = stage.get("transfer_eval")
-        cells.append((0, col, method_dir / "attacked.png", stage["method"], evaluation, None, transfer))
-        cells.append((1, col, method_dir / "gradcam_top1/gradcam_overlay.png", "Predicted Top-1 Grad-CAM", evaluation, cam, None))
+        cells.append((0, col, method_dir / "attacked.png", stage["method"], evaluation, None))
+        cells.append((1, col, method_dir / "gradcam_top1/gradcam_overlay.png", "Predicted Top-1 Grad-CAM", evaluation, cam))
 
-    for row, col, path, label, evaluation, cam, transfer in cells:
+    for row, col, path, label, evaluation, cam in cells:
         if not path.is_file():
             raise FileNotFoundError(f"Contact input missing: {path}")
         x = gap + col * (tile + gap)
@@ -345,23 +300,6 @@ def export_run_contact(
         draw.text((x, y + tile + 4), label, font=contact_font(19, True), fill="black")
         if evaluation is not None and cam is None:
             draw.text((x, y + tile + 32), f"Target P={100*evaluation['target_probability']:.2f}% Rank={evaluation['target_rank']}", font=contact_font(16), fill=(20, 55, 120))
-            transfer_models = [] if not transfer else transfer.get("models", [])
-            short_names = {
-                "resnet101": "ResNet-101",
-                "vgg19": "VGG19", "inception_v3": "IncV3",
-                "convnext_base": "ConvNeXt-B", "swin_b": "Swin-B",
-            }
-            for transfer_index, result in enumerate(transfer_models[:5]):
-                name = short_names.get(str(result.get("model")), str(result.get("model")))
-                success = "YES" if result.get("targeted_success") else "no"
-                line = (
-                    f"{name}: P={100*float(result['target_probability']):.2f}% "
-                    f"R={int(result['target_rank'])} ASR={success}"
-                )
-                draw.text(
-                    (x, y + tile + 57 + transfer_index * 23), line,
-                    font=contact_font(14), fill=(55, 55, 55),
-                )
         if cam is not None:
             draw.text((x, y + tile + 32), f"Top-1: {cam['explained_label']} P={100*cam['explained_probability']:.2f}%", font=contact_font(16), fill=(20, 55, 120))
             fg, bg = cam.get("cam_energy_foreground_fraction"), cam.get("cam_energy_background_fraction")
@@ -374,72 +312,6 @@ def export_run_contact(
     return output
 
 
-def export_transfer_contact(
-    run_root: Path,
-    run_name: str,
-    stages: list[dict],
-) -> Path | None:
-    """Export a metrics-only white-box/black-box transferability table."""
-    transfer_names = {
-        str(item.get("model"))
-        for stage in stages
-        for item in (stage.get("transfer_eval") or {}).get("models", [])
-    }
-    model_order = tuple(
-        name for name in
-        ("resnet50", "resnet101", "vgg19", "inception_v3", "convnext_base", "swin_b")
-        if name == "resnet50" or name in transfer_names
-    )
-    model_labels = {
-        "resnet50": "ResNet-50 (white-box)",
-        "resnet101": "ResNet-101 (black-box)",
-        "vgg19": "VGG-19", "inception_v3": "Inception-v3",
-        "convnext_base": "ConvNeXt-B", "swin_b": "Swin-B",
-    }
-    if not stages or not any(stage.get("transfer_eval") for stage in stages):
-        return None
-    contacts = run_root / "contacts"
-    contacts.mkdir(parents=True, exist_ok=True)
-    cell_w, row_h, gap, title_h, row_label_w = 360, 108, 12, 82, 225
-    width = row_label_w + gap * (len(stages) + 1) + cell_w * len(stages)
-    height = title_h + gap * (len(model_order) + 1) + row_h * len(model_order)
-    canvas = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(canvas)
-    draw.text(
-        (gap, title_h // 2),
-        f"{run_name} | fixed ResNet-50 attacked image | transferability metrics",
-        font=contact_font(26, True), fill="black", anchor="lm",
-    )
-    for col, stage in enumerate(stages):
-        x = row_label_w + gap + col * (cell_w + gap)
-        draw.text((x, title_h - 8), stage["method"], font=contact_font(17, True), fill="black", anchor="ls")
-        results = {
-            str(item.get("model")): item
-            for item in (stage.get("transfer_eval") or {}).get("models", [])
-        }
-        white_box = stage.get("final_eval") or {}
-        if white_box:
-            results["resnet50"] = {
-                **white_box,
-                "targeted_success": int(white_box.get("target_rank", 1001)) == 1,
-            }
-        for row, model_name in enumerate(model_order):
-            y = title_h + gap + row * (row_h + gap)
-            if col == 0:
-                draw.text((gap, y + row_h // 2), model_labels[model_name], font=contact_font(17, True), fill="black", anchor="lm")
-            result = results.get(model_name)
-            if not result:
-                continue
-            success = "YES" if result.get("targeted_success") else "no"
-            fill = (224, 246, 227) if result.get("targeted_success") else (242, 242, 242)
-            draw.rounded_rectangle((x, y, x + cell_w, y + row_h), radius=9, fill=fill, outline=(180, 180, 180), width=1)
-            draw.text((x + 12, y + 13), f"Target P={100*float(result['target_probability']):.3f}%  Rank={int(result['target_rank'])}", font=contact_font(16, True), fill=(20, 55, 120))
-            draw.text((x + 12, y + 44), f"Top-1: {result.get('top1_label', 'n/a')}", font=contact_font(15), fill=(35, 35, 35))
-            draw.text((x + 12, y + 73), f"Targeted success: {success}", font=contact_font(15), fill=(100, 45, 20))
-    output = contacts / f"{run_name}_transferability_contact.jpg"
-    canvas.save(output, quality=94, subsampling=0)
-    print(f"TRANSFERABILITY CONTACT EXPORTED | {output}", flush=True)
-    return output
 
 
 def extract_jia_step_probabilities(log_path: Path, target_label: str, output: Path) -> None:
@@ -466,30 +338,9 @@ def extract_jia_step_probabilities(log_path: Path, target_label: str, output: Pa
 
 def main() -> None:
     args = parse_args()
-    valid_methods = (
-        "cra",
-        "jia",
-        "cira",
-    )
-    selected_methods = tuple(
-        item.strip()
-        for item in args.methods.split(",") if item.strip()
-    )
-    if not selected_methods:
-        raise ValueError("--methods must select at least one method")
-    unknown_methods = sorted(set(selected_methods) - set(valid_methods))
-    if unknown_methods:
-        raise ValueError(f"Unknown --methods entries: {unknown_methods}")
-    if len(set(selected_methods)) != len(selected_methods):
-        raise ValueError(f"Duplicate --methods entries: {selected_methods}")
-    # Always execute in the canonical method order regardless of CLI ordering.
-    selected_methods = tuple(name for name in valid_methods if name in selected_methods)
+    selected_methods = ("cra", "jia", "cira")
     method_total = len(selected_methods)
     method_numbers = {name: index + 1 for index, name in enumerate(selected_methods)}
-    if args.phase in ("prepare", "attack") and "cra" not in selected_methods:
-        raise ValueError(
-            f"--phase {args.phase} is only meaningful when cra is selected"
-        )
     image = Path(args.image).expanduser().resolve()
     lora = Path(args.lora_path).expanduser().resolve()
     # Do not resolve these symlinks: resolving a venv interpreter points back
@@ -502,6 +353,21 @@ def main() -> None:
 
     target_class, target_label = resolve_target(args.target, args.target_class)
     foreground_prompt = subject_phrase(args.concept_token, args.subject)
+    hybrid_prompts = None
+    if args.construction_condition == "target_carrier":
+        visible_carrier, carrier_class = target_label, target_class
+    else:
+        selected_carrier = lookup_carrier(target_class)
+        visible_carrier = str(selected_carrier["carrier_label"])
+        carrier_class = int(selected_carrier["carrier_class"])
+        if args.construction_condition == "hybrid_carrier":
+            hybrid_entry, hybrid_prompts = select_hybrid_spec(
+                target_class, target_label, args.subject, args.concept_token,
+                args.hybrid_feature_clause, args.hybrid_identity_clause,
+                args.hybrid_forbidden_clause,
+            )
+            if int(hybrid_entry["carrier_class"]) != carrier_class:
+                raise ValueError("Hybrid Carrier class differs from the Non-Target Carrier class")
     safe_subject = args.subject.strip().replace(" ", "_")
     run_name = args.run_name or f"{image.stem}_{safe_subject}_{target_label.replace(' ', '_')}"
     run_root = Path(args.output_root).expanduser().resolve() / run_name
@@ -539,23 +405,20 @@ def main() -> None:
             )
         source = matches[0]
 
-    visible_carrier = (args.visible_carrier or target_label).strip()
-    if not visible_carrier:
-        raise ValueError("--visible-carrier cannot be empty")
     carrier_mode = visible_carrier.lower() != target_label.lower()
     default_background_prompt = (
         f"exactly one {visible_carrier} in the distant background, "
         f"a single {visible_carrier}, slightly blurred by shallow depth of field, "
         f"with visible edges, no duplicate animals"
     )
-    background_prompt = args.background_prompt or default_background_prompt
+    background_prompt = hybrid_prompts["background_prompt"] if hybrid_prompts else default_background_prompt
     default_jia_prompt = (
         "Edit only the masked background. Preserve the existing foreground "
         "subject unchanged. In the distant background, exactly one "
         f"{visible_carrier}, slightly blurred by shallow depth of field, with "
         "visible edges. Do not add or modify any foreground subject."
     )
-    jia_prompt = args.jia_prompt or default_jia_prompt
+    jia_prompt = hybrid_prompts["jia_prompt"] if hybrid_prompts else default_jia_prompt
     # Keep the foreground and background clauses separate.
     default_attack_prompt = (
         f"a realistic photograph with a sharp, in-focus {foreground_prompt} "
@@ -563,7 +426,7 @@ def main() -> None:
         f"{visible_carrier} is slightly blurred by shallow depth of field, "
         f"with visible edges, with no other {visible_carrier} and no duplicate animals"
     )
-    attack_prompt = args.attack_prompt or default_attack_prompt
+    attack_prompt = hybrid_prompts["attack_prompt"] if hybrid_prompts else default_attack_prompt
     manifest = {
         "image": str(image),
         "copied_source": str(source),
@@ -574,16 +437,13 @@ def main() -> None:
         "source_classes": args.source_classes,
         "target_class": target_class,
         "target_label": target_label,
+        "construction_condition": args.construction_condition,
+        "carrier_class": carrier_class,
         "visible_carrier": visible_carrier,
         "carrier_mode": carrier_mode,
         "background_prompt": background_prompt,
         "attack_prompt": attack_prompt,
         "jia_prompt": jia_prompt,
-        "prompt_overrides": {
-            "background": args.background_prompt is not None,
-            "jia": args.jia_prompt is not None,
-            "attack": args.attack_prompt is not None,
-        },
         "selected_methods": list(selected_methods),
         "lora_path": str(lora),
         "lora_scale": args.lora_scale,
@@ -618,6 +478,8 @@ def main() -> None:
             ("image", str(image)),
             ("subject", args.subject),
             ("target_class", target_class),
+            ("construction_condition", args.construction_condition),
+            ("carrier_class", carrier_class),
             ("lora_path", str(lora)),
         ):
             if prepared_manifest.get(key) != expected:
@@ -862,48 +724,16 @@ def main() -> None:
             _, gradcam = run_top1_gradcam(flux_python, cira_dir, assets / "subject_mask.png", logs / "09b_cira_gradcam.log", env, args.dry_run)
         stages.append({"method": "cira", "exit_code": code, "output": str(cira_dir), "gradcam": gradcam})
 
-    # Optional: evaluate fixed white-box outputs on separate black-box models.
-    for stage_index, stage in enumerate(stages, start=1) if args.evaluate_transfer else []:
-        output = Path(stage["output"])
-        if stage["exit_code"] != 0:
-            stage["transfer_exit_code"] = None
-            continue
-        transfer_code = run_logged(
-            f"BLACK-BOX TRANSFER EVALUATION | {stage['method']}",
-            [
-                str(flux_python), str(HERE / "evaluate_transferability.py"),
-                "--image", str(output / "attacked.png"),
-                "--target-class", str(target_class),
-                "--models", *args.transfer_models,
-                "--output-json", str(output / "transfer_eval.json"),
-                "--output-csv", str(output / "transfer_eval.csv"),
-            ],
-            logs / f"10{stage_index}_{stage['method']}_transfer_eval.log",
-            env, args.dry_run,
-        )
-        stage["transfer_exit_code"] = transfer_code
-        if transfer_code != 0:
-            raise RuntimeError(
-                f"Black-box transfer evaluation failed for {stage['method']} "
-                f"with exit code {transfer_code}"
-            )
-
     for stage in stages:
         output = Path(stage["output"])
         stage["final_eval"] = read_json(output / "attack_eval.json")
-        stage["transfer_eval"] = read_json(output / "transfer_eval.json")
         stage["steps"] = step_summary(output / "attack_steps.csv")
-    if args.evaluate_transfer:
-        write_transfer_summary(stages, run_root / "transferability_summary.csv")
     contact_path = None
-    transfer_contact_path = None
     if not args.dry_run:
         contact_path = export_run_contact(
             run_root, run_name, source, assets, stages, selected_methods,
             cira_preparation_root, jia_root, args.attack_scale,
         )
-        if args.evaluate_transfer:
-            transfer_contact_path = export_transfer_contact(run_root, run_name, stages)
     summary = {
         "run_root": str(run_root),
         "elapsed_seconds": time.time() - started,
@@ -911,7 +741,6 @@ def main() -> None:
         "target_label": target_label,
         "selected_methods": list(selected_methods),
         "contact": None if contact_path is None else str(contact_path),
-        "transferability_contact": None if transfer_contact_path is None else str(transfer_contact_path),
         "methods": stages,
     }
     (run_root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

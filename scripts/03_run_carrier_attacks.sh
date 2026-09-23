@@ -7,15 +7,8 @@ set -a
 source "$CONFIG"
 set +a
 
-if [[ "${VISIBLE_CARRIER:-auto}" == "auto" ]]; then
-  read -r VISIBLE_CARRIER_CLASS VISIBLE_CARRIER < <(
-    "${PYTHON_BIN:-python}" code/formal_pipeline/carrier_catalog.py --target-class "$TARGET_CLASS"
-  )
-elif [[ "${VISIBLE_CARRIER_CLASS:-auto}" == "auto" ]]; then
-  echo "Set VISIBLE_CARRIER_CLASS when using a custom VISIBLE_CARRIER." >&2
-  exit 2
-fi
-
+CONDITION="${CONSTRUCTION_CONDITION:-non_target_carrier}"
+CASE_NAME="${RUN_NAME}_${CONDITION}"
 COMMON=(
   --image "$SOURCE_IMAGE"
   --subject "$SUBJECT"
@@ -25,26 +18,31 @@ COMMON=(
   --lora-path "$LORA_WEIGHTS"
   --target "$TARGET_LABEL"
   --target-class "$TARGET_CLASS"
-  --visible-carrier "$VISIBLE_CARRIER"
-  --methods "${METHODS:-cra,jia,cira}"
+  --construction-condition "$CONDITION"
+  --hybrid-feature-clause "${HYBRID_FEATURE_CLAUSE:-}"
+  --hybrid-identity-clause "${HYBRID_IDENTITY_CLAUSE:-}"
+  --hybrid-forbidden-clause "${HYBRID_FORBIDDEN_CLAUSE:-}"
   --seed "${SEED:-0}"
   --output-root "$OUTPUT_ROOT"
-  --run-name "$RUN_NAME"
+  --run-name "$CASE_NAME"
   --sam-python "${SAM_PYTHON:-${PYTHON_BIN:-python}}"
 )
 
 if [[ "${EXECUTE:-0}" != "1" ]]; then
-  "${PYTHON_BIN:-python}" code/formal_pipeline/flux_automation.py "${COMMON[@]}" --run-name "${RUN_NAME}_dry_run_$$" --dry-run
-  echo "Execution also runs the carrier quality gate and optional DINOv3/SAM3 preservation evaluation."
+  "${PYTHON_BIN:-python}" code/formal_pipeline/flux_automation.py \
+    "${COMMON[@]}" --run-name "${CASE_NAME}_dry_run_$$" --dry-run
   exit 0
 fi
 
-RUN_ROOT="$OUTPUT_ROOT/$RUN_NAME"
+RUN_ROOT="$OUTPUT_ROOT/$CASE_NAME"
 "${PYTHON_BIN:-python}" code/formal_pipeline/flux_automation.py "${COMMON[@]}" --phase prepare
+CARRIER_INFO="$(
+  "${PYTHON_BIN:-python}" -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); print(value["carrier_class"]); print(value["visible_carrier"])' \
+    "$RUN_ROOT/manifest.json"
+)"
+mapfile -t CARRIER_SPEC <<< "$CARRIER_INFO"
 "${PYTHON_BIN:-python}" code/formal_pipeline/run_carrier_composite_gate.py \
-  --run-root "$RUN_ROOT" \
-  --carrier-label "$VISIBLE_CARRIER" \
-  --carrier-class "$VISIBLE_CARRIER_CLASS"
+  --run-root "$RUN_ROOT" --carrier-label "${CARRIER_SPEC[1]}" --carrier-class "${CARRIER_SPEC[0]}"
 "${PYTHON_BIN:-python}" code/formal_pipeline/flux_automation.py "${COMMON[@]}" --phase attack
 
 if [[ -n "${DINO_MODEL:-}" ]]; then
