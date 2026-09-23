@@ -513,9 +513,6 @@ def main() -> None:
         raise FileNotFoundError(f"Prepared run does not exist: {run_root}")
     assets = run_root / "assets"
     logs = run_root / "logs"
-    # Protected-mask experiment outputs are intentionally disabled in this
-    # reproduction package. Keep the historical locations documented without
-    # creating either directory.
     # protected_root = run_root / "protected_mask"
     return_root = run_root / "cra"
     teacher_root = run_root / "jia"
@@ -559,8 +556,7 @@ def main() -> None:
         "visible edges. Do not add or modify any foreground subject."
     )
     teacher_prompt = args.teacher_prompt or default_teacher_prompt
-    # Separate foreground and background into two clauses so the blur modifier
-    # cannot be interpreted as applying to the protected foreground subject.
+    # Keep the foreground and background clauses separate.
     default_attack_prompt = (
         f"a realistic photograph with a sharp, in-focus {foreground_prompt} "
         f"in the foreground; in the distant background, exactly one "

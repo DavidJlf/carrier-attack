@@ -46,19 +46,8 @@ def load_base(path: Path) -> ModuleType:
     return module
 
 
-def reject_mask_route(tokens: list[str]) -> None:
-    forbidden = {"--subject_mask", "--protect_subject_trajectory"}
-    used = forbidden.intersection(tokens)
-    if used:
-        raise ValueError(
-            "CRA finite-return route is whole-image/no-mask; remove: "
-            + ", ".join(sorted(used))
-        )
-
-
 def main() -> None:
     wrapper, base_tokens = parse_wrapper_args()
-    reject_mask_route(base_tokens)
     if wrapper.full_steps < 2:
         raise ValueError("--full-steps must be at least 2")
     if not 0 < wrapper.return_to_progress < wrapper.full_steps:
@@ -145,7 +134,6 @@ def main() -> None:
     print(f"  generation progress: {wrapper.full_steps}->{wrapper.return_to_progress}->{wrapper.full_steps}")
     print(f"  RF inversion intervals: {partial_intervals}")
     print(f"  attacked forward intervals: 1..{partial_intervals}")
-    print("  subject mask protection: OFF")
     print(f"  output: {output_root / wrapper.run_name}")
     if wrapper.dry_run:
         print("Base arguments:", " ".join(sys.argv[1:]))
