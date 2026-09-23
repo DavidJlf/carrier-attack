@@ -1,0 +1,24 @@
+name: carrier-repro
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.4
+  - pip:
+      - accelerate>=1.2
+      - diffusers>=0.35
+      - transformers>=4.48
+      - peft>=0.14
+      - safetensors>=0.4
+      - sentencepiece>=0.2
+      - protobuf>=5
+      - bitsandbytes>=0.45
+      - pillow>=10
+      - numpy>=1.26
+      - tqdm>=4.66
+      - opencv-python-headless>=4.10
