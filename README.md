@@ -1,6 +1,6 @@
 # LET THE CARRIER CARRY THE ATTACK: PRESERVING THE SUBJECT IN ADVERSARIAL IMAGE GENERATION
 
-Code for the anonymous ICLR submission. The pipeline reproduces a white-box, subject-preserving adversarial image generation run for a chosen subject and target class.
+The pipeline reproduces a white-box, subject-preserving adversarial image generation run for a chosen subject and target class.
 
 ## What is included
 
